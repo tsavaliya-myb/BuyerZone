@@ -1,0 +1,102 @@
+services:
+
+  api:
+    image: ghcr.io/${GHCR_OWNER:-your-org}/buyerzone-catalog:${IMAGE_TAG:-latest}
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
+    env_file: .env
+    ports:
+      - "127.0.0.1:8000:8000"   # Only exposed to localhost — Nginx proxies externally
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+    volumes:
+      - ./sessions:/app/sessions
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+  worker:
+    image: ghcr.io/${GHCR_OWNER:-your-org}/buyerzone-catalog:${IMAGE_TAG:-latest}
+    command: python -m arq app.workers.arq_worker.WorkerSettings
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+    volumes:
+      - ./sessions:/app/sessions
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+  ingestion:
+    image: ghcr.io/${GHCR_OWNER:-your-org}/buyerzone-catalog:${IMAGE_TAG:-latest}
+    command: python -m app.services.ingestion
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./sessions:/app/sessions
+    restart: always
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: buyerzone
+      POSTGRES_USER: buyerzone
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    # No ports: — not exposed to host in production
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U buyerzone"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  qdrant:
+    image: qdrant/qdrant:v1.13.0
+    volumes:
+      - qdrant_data:/qdrant/storage
+    # No ports: — not exposed to host in production
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --requirepass ${REDIS_PASSWORD}
+    volumes:
+      - redis_data:/data
+    # No ports: — not exposed to host in production
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  qdrant_data:
+  redis_data:
