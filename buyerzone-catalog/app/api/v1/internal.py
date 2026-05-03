@@ -8,11 +8,10 @@ from app.core.database import get_db
 from app.core.qdrant import get_qdrant_client
 from app.core.redis import get_redis
 from app.core.security import verify_internal_token
-from app.models.monitored_chat import MonitoredChat
 from app.models.product import Product
 from app.models.wholesaler import Wholesaler
-from app.schemas.product import ProductResponse
 from app.schemas.admin import WholesalerResponse
+from app.schemas.product import ProductResponse
 
 router = APIRouter(prefix="/internal", tags=["internal"])
 
@@ -51,6 +50,7 @@ async def bulk_update_status(
 ):
     """payload: { product_ids: [...], status: "stale" }"""
     import uuid
+
     from sqlalchemy import update
 
     ids = [uuid.UUID(pid) for pid in payload.get("product_ids", [])]
@@ -64,9 +64,6 @@ async def bulk_update_status(
 
 @router.get("/health")
 async def health(db: AsyncSession = Depends(get_db)):
-    from app.config import get_settings
-    settings = get_settings()
-
     health_status = {
         "api": "ok",
         "database": "unknown",

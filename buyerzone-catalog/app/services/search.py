@@ -6,7 +6,7 @@ import time
 import uuid
 
 import structlog
-from qdrant_client.models import Filter, FieldCondition, MatchValue
+from qdrant_client.models import FieldCondition, Filter, MatchValue
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
@@ -14,7 +14,6 @@ from sqlalchemy.orm import joinedload
 from app.config import get_settings
 from app.core.qdrant import get_qdrant_client
 from app.models.product import Product
-from app.models.wholesaler import Wholesaler
 from app.schemas.search import SearchResponse, SearchResultItem
 
 log = structlog.get_logger(__name__)
@@ -129,7 +128,7 @@ async def search_combined(
     products_map = {str(p.id): p for p in result.scalars().all()}
 
     items = []
-    for pid in sorted_ids:
+    for _pid in sorted_ids:
         # Retrieve payload to get product_id
         pass  # already resolved above
 

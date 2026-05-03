@@ -1,5 +1,4 @@
 import base64
-import time
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,8 +14,8 @@ router = APIRouter(prefix="/search", tags=["search"])
 def _decode_image(b64: str) -> bytes:
     try:
         return base64.b64decode(b64)
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid base64 image data")
+    except Exception as err:
+        raise HTTPException(status_code=400, detail="Invalid base64 image data") from err
 
 
 @router.post("/image", response_model=SearchResponse)

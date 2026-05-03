@@ -110,8 +110,8 @@ async def update_product_status(
     product.status = body.status
 
     # Mirror to Qdrant
-    from app.core.qdrant import get_qdrant_client
     from app.config import get_settings
+    from app.core.qdrant import get_qdrant_client
     settings = get_settings()
     qdrant_client = get_qdrant_client()
     await qdrant_client.set_payload(

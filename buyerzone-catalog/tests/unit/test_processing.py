@@ -1,5 +1,4 @@
-import pytest
-from app.services.processing import _extract_price, _extract_name, _validate_image
+from app.services.processing import _extract_name, _extract_price, _validate_image
 
 
 def test_extract_price_rupee_symbol():

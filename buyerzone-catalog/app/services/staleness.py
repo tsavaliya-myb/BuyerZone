@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import structlog
 from sqlalchemy import update
@@ -18,7 +18,7 @@ settings = get_settings()
 
 async def run_staleness_check() -> int:
     """Mark active products older than staleness_days as stale. Returns count updated."""
-    cutoff = datetime.now(timezone.utc) - timedelta(days=settings.staleness_days)
+    cutoff = datetime.now(UTC) - timedelta(days=settings.staleness_days)
 
     async with AsyncSessionLocal() as session:
         result = await session.execute(

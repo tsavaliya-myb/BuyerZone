@@ -14,13 +14,10 @@ import io
 import logging
 import re
 import threading
+from datetime import UTC
 
 import structlog
 import uvicorn
-
-logging.basicConfig(level=logging.WARNING)
-logging.getLogger("pyrogram").setLevel(logging.WARNING)
-logging.getLogger("sqlalchemy").setLevel(logging.WARNING)
 from fastapi import FastAPI
 from pyrogram import Client
 
@@ -30,9 +27,13 @@ from app.services.chat_resolver import (
     get_whitelist,
     is_whitelisted,
     load_whitelist_from_db,
-    search_dialogs,
     resolve_dialog_by_exact_name,
+    search_dialogs,
 )
+
+logging.basicConfig(level=logging.WARNING)
+logging.getLogger("pyrogram").setLevel(logging.WARNING)
+logging.getLogger("sqlalchemy").setLevel(logging.WARNING)
 
 log = structlog.get_logger(__name__)
 settings = get_settings()
@@ -91,7 +92,7 @@ async def on_raw(client: Client, update, users, chats):
     # Edits (UpdateEditChannelMessage) and deletes (UpdateDeleteChannelMessages)
     # are intentionally not handled — the "new message" updates are the only
     # source of catalog rows.
-    if not isinstance(update, (UpdateNewChannelMessage, UpdateNewMessage)):
+    if not isinstance(update, UpdateNewChannelMessage | UpdateNewMessage):
         return
 
     raw_msg = update.message
@@ -215,7 +216,7 @@ async def _download_and_enqueue(
     date,
     bypass_limits: bool = False,
 ) -> None:
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     image_b64: str | None = None
     if is_photo:
@@ -242,7 +243,7 @@ async def _download_and_enqueue(
         "chat_id": chat_id,
         "chat_title": chat_title,
         "message_id": msg_id,
-        "date": datetime.fromtimestamp(date, tz=timezone.utc).isoformat() if date else None,
+        "date": datetime.fromtimestamp(date, tz=UTC).isoformat() if date else None,
     }
 
     try:
@@ -256,6 +257,7 @@ async def _download_and_enqueue(
 
 async def _get_last_logged_msg_id(chat_id: int) -> int | None:
     from sqlalchemy import func, select
+
     from app.core.database import AsyncSessionLocal
     from app.models.ingestion_log import IngestionLog
 
@@ -312,11 +314,11 @@ async def _enqueue_from_history(client: Client, message, chat_title: str) -> boo
 
 
 async def _catch_up_chat(client: Client, chat_id: int, chat_title: str) -> int:
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
 
     last_msg_id = await _get_last_logged_msg_id(chat_id)
     cutoff_dt = (
-        datetime.now(timezone.utc) - timedelta(hours=CATCH_UP_FIRST_RUN_HOURS)
+        datetime.now(UTC) - timedelta(hours=CATCH_UP_FIRST_RUN_HOURS)
         if last_msg_id is None
         else None
     )
@@ -330,8 +332,7 @@ async def _catch_up_chat(client: Client, chat_id: int, chat_title: str) -> int:
             # Pyrogram may return a naive datetime (UTC) — normalise before compare.
             msg_dt = message.date
             if msg_dt.tzinfo is None:
-                from datetime import timezone as _tz
-                msg_dt = msg_dt.replace(tzinfo=_tz.utc)
+                msg_dt = msg_dt.replace(tzinfo=UTC)
             if msg_dt < cutoff_dt:
                 break
         missed.append(message)

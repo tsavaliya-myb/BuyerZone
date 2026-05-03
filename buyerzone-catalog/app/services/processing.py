@@ -5,7 +5,7 @@ from __future__ import annotations
 import base64
 import re
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import structlog
 
@@ -84,6 +84,7 @@ async def _get_wholesaler_id(
 
     from sqlalchemy import select
     from sqlalchemy.dialects.postgresql import insert as pg_insert
+
     from app.models.wholesaler import Wholesaler
 
     result = await session.execute(
@@ -140,10 +141,11 @@ async def _check_duplicate(
         return False
 
     from datetime import timedelta
-    from qdrant_client.models import Filter, FieldCondition, MatchValue, Range
+
+    from qdrant_client.models import FieldCondition, Filter, MatchValue, Range
 
     client = get_qdrant_client()
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=30)).timestamp()
+    cutoff = (datetime.now(UTC) - timedelta(days=30)).timestamp()
 
     must = [
         FieldCondition(key="status", match=MatchValue(value="active")),
@@ -174,7 +176,7 @@ async def process_message(payload: dict) -> None:
     sender_id: int | None = payload.get("sender_id")
     has_image: bool = payload.get("has_image", payload.get("image_b64") is not None)
     received_at = (
-        datetime.fromisoformat(payload["date"]).astimezone(timezone.utc).replace(tzinfo=None)
+        datetime.fromisoformat(payload["date"]).astimezone(UTC).replace(tzinfo=None)
         if payload.get("date")
         else datetime.utcnow()
     )

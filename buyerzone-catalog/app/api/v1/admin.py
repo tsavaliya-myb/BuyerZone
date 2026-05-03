@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from passlib.context import CryptContext
@@ -68,7 +68,10 @@ async def add_chat(
     from app.core.telegram import resolve_dialog_via_ingestion
     match = await resolve_dialog_via_ingestion(body.chat_name)
     if not match:
-        raise HTTPException(status_code=404, detail=f"Chat '{body.chat_name}' not found in joined dialogs")
+        raise HTTPException(
+            status_code=404,
+            detail=f"Chat '{body.chat_name}' not found in joined dialogs",
+        )
 
     # Check if already monitored
     existing = await db.execute(
@@ -237,7 +240,10 @@ async def get_stats(db: AsyncSession = Depends(get_db), _=Depends(require_admin)
         .order_by(func.count(Product.id).desc())
         .limit(10)
     )
-    by_wholesaler = [{"wholesaler_id": str(r[0]), "count": r[1]} for r in by_wholesaler_result.fetchall()]
+    by_wholesaler = [
+        {"wholesaler_id": str(r[0]), "count": r[1]}
+        for r in by_wholesaler_result.fetchall()
+    ]
 
     return DashboardStats(
         total_products=total,

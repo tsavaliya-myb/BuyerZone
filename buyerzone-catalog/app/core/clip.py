@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import io
-import numpy as np
+
 from PIL import Image
 
 _model = None

@@ -56,7 +56,7 @@ async def load_whitelist_from_db() -> None:
     log.info("whitelist_loaded", count=len(_whitelist))
 
 
-async def search_dialogs(client: "Client", name: str) -> list[dict]:
+async def search_dialogs(client: Client, name: str) -> list[dict]:
     """Search joined Telegram dialogs by name (case-insensitive substring)."""
     matches = []
     name_lower = name.lower()
@@ -75,7 +75,7 @@ async def search_dialogs(client: "Client", name: str) -> list[dict]:
     return matches
 
 
-async def resolve_dialog_by_exact_name(client: "Client", name: str) -> dict | None:
+async def resolve_dialog_by_exact_name(client: Client, name: str) -> dict | None:
     """Find a dialog whose title exactly matches name (case-sensitive)."""
     async for dialog in client.get_dialogs():
         if dialog.chat and dialog.chat.title == name:
