@@ -1,0 +1,241 @@
+name: CI/CD — Build, Test & Deploy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'buyerzone-catalog/**'
+      - '.github/workflows/deploy.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'buyerzone-catalog/**'
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository_owner }}/buyerzone-catalog
+
+jobs:
+  # ───────────────────────────────────────────────────────────────────
+  # JOB 1: Lint & Test
+  # ───────────────────────────────────────────────────────────────────
+  test:
+    name: Lint & Test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: buyerzone-catalog
+
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_DB: buyerzone_test
+          POSTGRES_USER: buyerzone
+          POSTGRES_PASSWORD: testpassword
+        ports:
+          - "5432:5432"
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - "6379:6379"
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Poetry
+        run: pip install poetry==1.8.4
+
+      - name: Cache Poetry virtualenv
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pypoetry
+          key: poetry-${{ hashFiles('buyerzone-catalog/poetry.lock') }}
+          restore-keys: poetry-
+
+      - name: Install dependencies
+        run: poetry install --with dev --no-interaction
+
+      - name: Lint with Ruff
+        run: poetry run ruff check .
+
+      - name: Format check with Black
+        run: poetry run black --check .
+
+      - name: Run tests
+        run: poetry run pytest --cov=app --cov-report=xml -v
+        env:
+          DATABASE_URL: postgresql+asyncpg://buyerzone:testpassword@localhost:5432/buyerzone_test
+          REDIS_URL: redis://localhost:6379
+          REDIS_HOST: localhost
+          REDIS_PORT: "6379"
+          REDIS_PASSWORD: ""
+          JWT_SECRET_KEY: test-secret-key-not-for-production
+          INTERNAL_API_KEY: test-internal-key
+          ENVIRONMENT: test
+          LOG_LEVEL: DEBUG
+          QDRANT_HOST: localhost
+          QDRANT_PORT: "6333"
+          QDRANT_COLLECTION: product_embeddings_test
+          TELEGRAM_API_ID: "12345"
+          TELEGRAM_API_HASH: fakehash
+          TELEGRAM_SESSION_NAME: test_session
+          S3_ACCESS_KEY_ID: fake
+          S3_SECRET_ACCESS_KEY: fake
+          S3_BUCKET_NAME: fake-bucket
+          S3_PUBLIC_URL: https://fake.example.com
+          S3_ENDPOINT_URL: https://fake.example.com
+          S3_REGION: auto
+          DEDUP_SIMILARITY_THRESHOLD: "0.96"
+          STALENESS_DAYS: "30"
+
+      - name: Upload coverage report
+        uses: codecov/codecov-action@v4
+        if: always()
+        with:
+          file: buyerzone-catalog/coverage.xml
+          fail_ci_if_error: false
+
+  # ───────────────────────────────────────────────────────────────────
+  # JOB 2: Build & Push Docker Image
+  # ───────────────────────────────────────────────────────────────────
+  build:
+    name: Build & Push Image
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    outputs:
+      short-sha: ${{ steps.vars.outputs.sha_short }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set short SHA output
+        id: vars
+        run: echo "sha_short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata (tags & labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=sha,prefix=sha-
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./buyerzone-catalog
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # GitHub Actions cache — speeds up subsequent builds
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ───────────────────────────────────────────────────────────────────
+  # JOB 3: Deploy to Hostinger VPS
+  # ───────────────────────────────────────────────────────────────────
+  deploy:
+    name: Deploy to Hostinger VPS
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    environment: production   # Requires manual approval gate if configured
+
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          IMAGE_TAG: sha-${{ needs.build.outputs.short-sha }}
+          REGISTRY: ghcr.io
+          IMAGE_FULL: ghcr.io/${{ env.IMAGE_NAME }}
+          GH_ACTOR: ${{ github.actor }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          envs: IMAGE_TAG,REGISTRY,IMAGE_FULL,GH_ACTOR,GH_TOKEN
+          script: |
+            set -e
+
+            APP_DIR="${{ secrets.VPS_APP_DIR }}"
+            echo "🚀 Starting deployment of tag: $IMAGE_TAG"
+            cd "$APP_DIR"
+
+            # Pull latest repo changes (compose file updates, migrations, etc.)
+            git pull origin main
+
+            # Authenticate with GHCR on the VPS
+            echo "$GH_TOKEN" | docker login ghcr.io -u "$GH_ACTOR" --password-stdin
+
+            # Pull the new image
+            echo "📥 Pulling image: $IMAGE_FULL:$IMAGE_TAG"
+            docker pull "$IMAGE_FULL:$IMAGE_TAG"
+            docker pull "$IMAGE_FULL:latest"
+
+            # Run database migrations BEFORE switching traffic
+            echo "📦 Running Alembic migrations..."
+            IMAGE_TAG="$IMAGE_TAG" docker compose \
+              -f docker-compose.prod.yml run --rm api \
+              alembic upgrade head
+
+            # Rolling restart — only app services (not DBs)
+            echo "♻️  Restarting api, worker, ingestion..."
+            IMAGE_TAG="$IMAGE_TAG" docker compose \
+              -f docker-compose.prod.yml up -d \
+              --no-deps --remove-orphans \
+              api worker ingestion
+
+            # Health check with retry
+            echo "⏳ Waiting for API to become healthy..."
+            for i in 1 2 3 4 5; do
+              sleep 6
+              if curl -sf http://localhost:8000/health > /dev/null; then
+                echo "✅ Health check passed on attempt $i"
+                break
+              fi
+              if [ $i -eq 5 ]; then
+                echo "❌ Health check failed after 5 attempts — rolling back to latest"
+                IMAGE_TAG=latest docker compose \
+                  -f docker-compose.prod.yml up -d \
+                  --no-deps api worker ingestion
+                exit 1
+              fi
+              echo "  Retry $i/5..."
+            done
+
+            # Clean up dangling images older than 72h
+            docker image prune -f --filter "until=72h" || true
+
+            echo "🎉 Deployment complete — running: $IMAGE_TAG"

@@ -43,8 +43,9 @@ coverage.xml
 # ruff
 .ruff_cache/
 
-# All dot folders
+# All dot folders except .github
 .*/
+!.github/
 
 # Editor swap files
 *.swp
