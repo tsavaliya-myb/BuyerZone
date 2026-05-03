@@ -32,8 +32,11 @@ COPY --from=builder /usr/local/bin /usr/local/bin
 # Copy application source
 COPY . .
 
-# Ensure sessions directory exists and is owned by app user
-RUN mkdir -p /app/sessions && chown -R app:app /app
+# Ensure sessions + model cache dirs exist and are owned by app user
+RUN mkdir -p /app/sessions /app/.cache && chown -R app:app /app
+
+ENV HF_HOME=/app/.cache
+ENV TORCH_HOME=/app/.cache
 
 USER app
 

@@ -61,25 +61,26 @@ class Settings(BaseSettings):
     def is_production(self) -> bool:
         return self.environment == "production"
 
+    redis_ssl: bool = False  # True for cloud Redis (Upstash/Redis Cloud), False for Docker
+
     @property
     def redis_url_with_auth(self) -> str:
-        """Redis URL with password embedded, used by aioredis."""
+        scheme = "rediss" if self.redis_ssl else "redis"
         if self.redis_password:
-            return f"rediss://default:{self.redis_password}@{self.redis_host}:{self.redis_port}"
-        return f"rediss://{self.redis_host}:{self.redis_port}"
+            return f"{scheme}://default:{self.redis_password}@{self.redis_host}:{self.redis_port}"
+        return f"{scheme}://{self.redis_host}:{self.redis_port}"
 
     @property
     def arq_redis_settings(self):
-        """ARQ RedisSettings built from individual host/port/password fields."""
         from arq.connections import RedisSettings
         return RedisSettings(
             host=self.redis_host,
             port=self.redis_port,
             password=self.redis_password or None,
-            ssl=True,
-            ssl_cert_reqs=None,
-            conn_timeout=15,        # SSL handshake to cloud Redis needs headroom
-            conn_retries=10,        # tolerate transient network blips
+            ssl=self.redis_ssl,
+            ssl_cert_reqs=None if self.redis_ssl else None,
+            conn_timeout=15,
+            conn_retries=10,
             conn_retry_delay=2,
         )
 

@@ -44,8 +44,8 @@ def create_app() -> FastAPI:
         title="BuyerZone Catalog Intelligence API",
         description="Telegram Ingestion Module — product search and admin APIs",
         version="1.0.0",
-        docs_url="/docs" if not settings.is_production else None,
-        redoc_url="/redoc" if not settings.is_production else None,
+        docs_url="/docs", #if not settings.is_production else None,
+        redoc_url="/redoc", #if not settings.is_production else None,
         lifespan=lifespan,
     )
 

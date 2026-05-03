@@ -32,16 +32,14 @@ DLQ_MAX_LEN = 10_000
 def get_redis() -> aioredis.Redis:
     global _redis
     if _redis is None:
-        import ssl as _ssl
-        ctx = _ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = _ssl.CERT_NONE
-        _redis = aioredis.from_url(
-            settings.redis_url_with_auth,
-            encoding="utf-8",
-            decode_responses=True,
-            ssl=ctx,
-        )
+        kwargs: dict = {"encoding": "utf-8", "decode_responses": True}
+        if settings.redis_ssl:
+            import ssl as _ssl
+            ctx = _ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = _ssl.CERT_NONE
+            kwargs["ssl"] = ctx
+        _redis = aioredis.from_url(settings.redis_url_with_auth, **kwargs)
     return _redis
 
 
