@@ -5,6 +5,7 @@ from pydantic import BaseModel
 
 # ── Auth ───────────────────────────────────────────────────────────────────────
 
+
 class LoginRequest(BaseModel):
     username: str
     password: str
@@ -16,6 +17,7 @@ class TokenResponse(BaseModel):
 
 
 # ── Wholesaler ─────────────────────────────────────────────────────────────────
+
 
 class WholesalerCreate(BaseModel):
     name: str
@@ -46,6 +48,7 @@ class WholesalerResponse(BaseModel):
 
 # ── Monitored Chats ────────────────────────────────────────────────────────────
 
+
 class ChatSearchRequest(BaseModel):
     name: str
 
@@ -75,6 +78,7 @@ class MonitoredChatResponse(BaseModel):
 
 # ── Ingestion Logs ─────────────────────────────────────────────────────────────
 
+
 class IngestionLogResponse(BaseModel):
     id: uuid.UUID
     chat_id: int
@@ -88,6 +92,7 @@ class IngestionLogResponse(BaseModel):
 
 
 # ── Stats ──────────────────────────────────────────────────────────────────────
+
 
 class DashboardStats(BaseModel):
     total_products: int

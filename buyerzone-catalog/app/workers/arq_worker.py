@@ -18,10 +18,12 @@ async def startup(ctx: dict) -> None:
     """Preload CLIP model and ensure Qdrant collection + indexes exist."""
     log.info("worker_startup_clip_load")
     from app.core.clip import _load
+
     _load()
     log.info("worker_startup_clip_ready")
 
     from app.core.qdrant import ensure_collection
+
     await ensure_collection()
     log.info("worker_startup_qdrant_ready")
 

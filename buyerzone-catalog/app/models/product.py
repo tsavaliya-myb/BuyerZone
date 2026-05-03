@@ -11,9 +11,7 @@ from app.core.database import Base
 class Product(Base):
     __tablename__ = "products"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     qdrant_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), unique=True, nullable=True
     )
@@ -34,9 +32,7 @@ class Product(Base):
     status: Mapped[str] = mapped_column(String(20), default="active")  # active|stale|removed
     received_at: Mapped[datetime] = mapped_column(nullable=False)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(
-        server_default=func.now(), onupdate=func.now()
-    )
+    updated_at: Mapped[datetime] = mapped_column(server_default=func.now(), onupdate=func.now())
 
     wholesaler: Mapped["Wholesaler"] = relationship(back_populates="products")  # noqa: F821
     chat: Mapped["MonitoredChat"] = relationship(back_populates="products")  # noqa: F821

@@ -36,6 +36,7 @@ pwd_context = CryptContext(schemes=["sha256_crypt"])
 
 # ── Auth ───────────────────────────────────────────────────────────────────────
 
+
 @router.post("/login", response_model=TokenResponse)
 async def login(body: LoginRequest, db: AsyncSession = Depends(get_db)):
     result = await db.execute(
@@ -50,9 +51,11 @@ async def login(body: LoginRequest, db: AsyncSession = Depends(get_db)):
 
 # ── Chat whitelist management ──────────────────────────────────────────────────
 
+
 @router.post("/chats/search")
 async def search_chats(body: ChatSearchRequest, _=Depends(require_admin)):
     from app.core.telegram import search_dialogs_via_ingestion
+
     results = await search_dialogs_via_ingestion(body.name)
     if not results:
         raise HTTPException(status_code=404, detail="No matching chats found")
@@ -66,6 +69,7 @@ async def add_chat(
     admin=Depends(require_admin),
 ):
     from app.core.telegram import resolve_dialog_via_ingestion
+
     match = await resolve_dialog_via_ingestion(body.chat_name)
     if not match:
         raise HTTPException(
@@ -130,6 +134,7 @@ async def list_chats(db: AsyncSession = Depends(get_db), _=Depends(require_admin
 
 # ── Wholesalers ────────────────────────────────────────────────────────────────
 
+
 @router.post("/wholesalers", response_model=WholesalerResponse, status_code=201)
 async def create_wholesaler(
     body: WholesalerCreate,
@@ -168,6 +173,7 @@ async def update_wholesaler(
 
 
 # ── Logs & Stats ───────────────────────────────────────────────────────────────
+
 
 @router.get("/logs", response_model=list[IngestionLogResponse])
 async def get_logs(
@@ -216,14 +222,10 @@ async def get_stats(db: AsyncSession = Depends(get_db), _=Depends(require_admin)
         )
     ).scalar_one()
     today_count = (
-        await db.execute(
-            select(func.count(Product.id)).where(Product.created_at >= today_start)
-        )
+        await db.execute(select(func.count(Product.id)).where(Product.created_at >= today_start))
     ).scalar_one()
     week_count = (
-        await db.execute(
-            select(func.count(Product.id)).where(Product.created_at >= week_start)
-        )
+        await db.execute(select(func.count(Product.id)).where(Product.created_at >= week_start))
     ).scalar_one()
 
     by_chat_result = await db.execute(
@@ -241,8 +243,7 @@ async def get_stats(db: AsyncSession = Depends(get_db), _=Depends(require_admin)
         .limit(10)
     )
     by_wholesaler = [
-        {"wholesaler_id": str(r[0]), "count": r[1]}
-        for r in by_wholesaler_result.fetchall()
+        {"wholesaler_id": str(r[0]), "count": r[1]} for r in by_wholesaler_result.fetchall()
     ]
 
     return DashboardStats(

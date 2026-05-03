@@ -13,9 +13,7 @@ bearer_scheme = HTTPBearer()
 
 def create_access_token(data: dict) -> str:
     to_encode = data.copy()
-    expire = datetime.now(UTC) + timedelta(
-        minutes=settings.jwt_access_token_expire_minutes
-    )
+    expire = datetime.now(UTC) + timedelta(minutes=settings.jwt_access_token_expire_minutes)
     to_encode["exp"] = expire
     return jwt.encode(to_encode, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
 

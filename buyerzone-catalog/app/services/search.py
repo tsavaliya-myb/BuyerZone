@@ -20,18 +20,14 @@ log = structlog.get_logger(__name__)
 settings = get_settings()
 
 
-async def search_by_image(
-    vector: list[float], top_k: int, db: AsyncSession
-) -> SearchResponse:
+async def search_by_image(vector: list[float], top_k: int, db: AsyncSession) -> SearchResponse:
     t0 = time.perf_counter()
     client = get_qdrant_client()
 
     response = await client.query_points(
         collection_name=settings.qdrant_collection,
         query=vector,
-        query_filter=Filter(
-            must=[FieldCondition(key="status", match=MatchValue(value="active"))]
-        ),
+        query_filter=Filter(must=[FieldCondition(key="status", match=MatchValue(value="active"))]),
         limit=top_k,
         score_threshold=settings.search_similarity_threshold,
         with_payload=True,
@@ -73,9 +69,7 @@ async def search_combined(
 
     # Fetch more candidates then re-rank
     fetch_k = min(top_k * 3, 100)
-    active_filter = Filter(
-        must=[FieldCondition(key="status", match=MatchValue(value="active"))]
-    )
+    active_filter = Filter(must=[FieldCondition(key="status", match=MatchValue(value="active"))])
 
     scores: dict[str, float] = {}
 

@@ -26,6 +26,7 @@ async def lifespan(app: FastAPI):
 
     # Hydrate in-memory whitelist from DB
     from app.services.chat_resolver import load_whitelist_from_db
+
     await load_whitelist_from_db()
 
     log.info("startup_complete")
@@ -44,8 +45,8 @@ def create_app() -> FastAPI:
         title="BuyerZone Catalog Intelligence API",
         description="Telegram Ingestion Module — product search and admin APIs",
         version="1.0.0",
-        docs_url="/docs", #if not settings.is_production else None,
-        redoc_url="/redoc", #if not settings.is_production else None,
+        docs_url="/docs",  # if not settings.is_production else None,
+        redoc_url="/redoc",  # if not settings.is_production else None,
         lifespan=lifespan,
     )
 

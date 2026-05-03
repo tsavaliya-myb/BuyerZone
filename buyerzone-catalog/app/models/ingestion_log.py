@@ -11,9 +11,7 @@ from app.core.database import Base
 class IngestionLog(Base):
     __tablename__ = "ingestion_logs"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     telegram_msg_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     status: Mapped[str] = mapped_column(

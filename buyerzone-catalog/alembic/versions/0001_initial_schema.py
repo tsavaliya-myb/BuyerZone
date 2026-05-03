@@ -90,9 +90,7 @@ def upgrade() -> None:
     )
     op.create_index("idx_products_wholesaler", "products", ["wholesaler_id"])
     op.create_index("idx_products_status", "products", ["status"])
-    op.create_index(
-        "idx_products_received_at", "products", [sa.text("received_at DESC")]
-    )
+    op.create_index("idx_products_received_at", "products", [sa.text("received_at DESC")])
 
     # ── ingestion_logs ─────────────────────────────────────────────────────────
     op.create_table(

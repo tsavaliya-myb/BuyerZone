@@ -17,7 +17,8 @@ depends_on = None
 
 def upgrade() -> None:
     op.alter_column(
-        "products", "qdrant_id",
+        "products",
+        "qdrant_id",
         existing_type=sa.dialects.postgresql.UUID(as_uuid=True),
         nullable=True,
     )
@@ -29,7 +30,8 @@ def downgrade() -> None:
     op.alter_column("products", "image_key", existing_type=sa.Text(), nullable=False)
     op.alter_column("products", "image_url", existing_type=sa.Text(), nullable=False)
     op.alter_column(
-        "products", "qdrant_id",
+        "products",
+        "qdrant_id",
         existing_type=sa.dialects.postgresql.UUID(as_uuid=True),
         nullable=False,
     )

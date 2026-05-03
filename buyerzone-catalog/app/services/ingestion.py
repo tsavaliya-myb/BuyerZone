@@ -50,8 +50,8 @@ MAX_CONCURRENT_DOWNLOADS = 20
 _download_sem = asyncio.Semaphore(MAX_CONCURRENT_DOWNLOADS)
 
 # Startup catch-up: replay messages the listener missed while it was down.
-CATCH_UP_LIMIT = 100                # max history depth scanned per chat
-CATCH_UP_FIRST_RUN_HOURS = 24       # on first-ever run with no prior logs
+CATCH_UP_LIMIT = 100  # max history depth scanned per chat
+CATCH_UP_FIRST_RUN_HOURS = 24  # on first-ever run with no prior logs
 
 pyrogram_client = Client(
     name=settings.telegram_session_name,
@@ -83,6 +83,7 @@ async def health():
 
 
 # ── Pyrogram listener ──────────────────────────────────────────────────────────
+
 
 @pyrogram_client.on_raw_update()
 async def on_raw(client: Client, update, users, chats):
@@ -228,9 +229,7 @@ async def _download_and_enqueue(
                     buf.write(chunk)
                 image_b64 = base64.b64encode(buf.getvalue()).decode()
             except Exception as exc:
-                log.error(
-                    "image_download_failed", chat_id=chat_id, msg_id=msg_id, error=str(exc)
-                )
+                log.error("image_download_failed", chat_id=chat_id, msg_id=msg_id, error=str(exc))
                 return
 
     payload = {
@@ -255,6 +254,7 @@ async def _download_and_enqueue(
 
 # ── Startup catch-up ───────────────────────────────────────────────────────────
 
+
 async def _get_last_logged_msg_id(chat_id: int) -> int | None:
     from sqlalchemy import func, select
 
@@ -263,9 +263,7 @@ async def _get_last_logged_msg_id(chat_id: int) -> int | None:
 
     async with AsyncSessionLocal() as session:
         result = await session.execute(
-            select(func.max(IngestionLog.telegram_msg_id)).where(
-                IngestionLog.chat_id == chat_id
-            )
+            select(func.max(IngestionLog.telegram_msg_id)).where(IngestionLog.chat_id == chat_id)
         )
         return result.scalar_one_or_none()
 
@@ -289,8 +287,12 @@ async def _enqueue_from_history(client: Client, message, chat_title: str) -> boo
     if not is_photo and not caption:
         return False
     if not is_photo and (
-        message.video or message.document or message.sticker
-        or message.voice or message.audio or message.animation
+        message.video
+        or message.document
+        or message.sticker
+        or message.voice
+        or message.audio
+        or message.animation
     ):
         return False
     if caption and OUT_OF_STOCK_PATTERNS.search(caption):
@@ -347,7 +349,9 @@ async def _catch_up_chat(client: Client, chat_id: int, chat_title: str) -> int:
         except Exception as exc:
             log.error(
                 "catch_up_message_failed",
-                chat_id=chat_id, msg_id=message.id, error=str(exc),
+                chat_id=chat_id,
+                msg_id=message.id,
+                error=str(exc),
             )
     return enqueued
 
@@ -368,6 +372,7 @@ async def _catch_up_missed(client: Client) -> None:
 
 
 # ── Entrypoint ─────────────────────────────────────────────────────────────────
+
 
 async def main() -> None:
     await load_whitelist_from_db()
@@ -400,6 +405,7 @@ async def main() -> None:
         log.info("ingestion_service_ready")
         try:
             from pyrogram import idle
+
             await idle()
         finally:
             await close_arq_pool()

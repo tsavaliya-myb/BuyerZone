@@ -11,9 +11,7 @@ from app.core.database import Base
 class MonitoredChat(Base):
     __tablename__ = "monitored_chats"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     chat_id: Mapped[int] = mapped_column(BigInteger, unique=True, nullable=False)
     chat_name: Mapped[str] = mapped_column(String(255), nullable=False)
     chat_type: Mapped[str] = mapped_column(String(20), nullable=False)  # group|channel|supergroup

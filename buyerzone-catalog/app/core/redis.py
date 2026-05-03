@@ -35,6 +35,7 @@ def get_redis() -> aioredis.Redis:
         kwargs: dict = {"encoding": "utf-8", "decode_responses": True}
         if settings.redis_ssl:
             import ssl as _ssl
+
             ctx = _ssl.create_default_context()
             ctx.check_hostname = False
             ctx.verify_mode = _ssl.CERT_NONE
@@ -69,6 +70,7 @@ async def close_arq_pool() -> None:
 
 # ── Backpressure helpers ──────────────────────────────────────────────────────
 
+
 async def _check_rate_limit(redis, chat_id: int) -> int:
     """Increment per-chat per-minute counter. Returns post-increment count."""
     minute_bucket = int(time.time() // 60)
@@ -94,6 +96,7 @@ async def _dlq_push(redis, payload: dict, *, reason: str, **extra) -> None:
 
 
 # ── ARQ job queue helper ──────────────────────────────────────────────────────
+
 
 async def enqueue_message(payload: dict, *, bypass_limits: bool = False) -> None:
     """Enqueue a message for the ARQ worker.

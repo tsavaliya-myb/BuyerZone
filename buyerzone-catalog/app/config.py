@@ -23,8 +23,8 @@ class Settings(BaseSettings):
     qdrant_host: str = "localhost"
     qdrant_port: int = 6333
     qdrant_collection: str = "product_embeddings"
-    qdrant_url: str | None = None                   # cloud URL overrides host+port when set
-    qdrant_cluster_endpoint: str | None = None      # alias some dashboards export
+    qdrant_url: str | None = None  # cloud URL overrides host+port when set
+    qdrant_cluster_endpoint: str | None = None  # alias some dashboards export
     qdrant_api_key: str | None = None
 
     # ── Redis ──────────────────────────────────────────────────────────────────
@@ -74,6 +74,7 @@ class Settings(BaseSettings):
     @property
     def arq_redis_settings(self):
         from arq.connections import RedisSettings
+
         return RedisSettings(
             host=self.redis_host,
             port=self.redis_port,

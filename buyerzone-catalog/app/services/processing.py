@@ -87,9 +87,7 @@ async def _get_wholesaler_id(
 
     from app.models.wholesaler import Wholesaler
 
-    result = await session.execute(
-        select(Wholesaler.id).where(Wholesaler.telegram_id == sender_id)
-    )
+    result = await session.execute(select(Wholesaler.id).where(Wholesaler.telegram_id == sender_id))
     wid = result.scalar_one_or_none()
     if wid is not None:
         return wid
@@ -125,15 +123,11 @@ async def _get_wholesaler_id(
         return inserted
 
     # Lost the race — another worker just inserted. Re-select.
-    result = await session.execute(
-        select(Wholesaler.id).where(Wholesaler.telegram_id == sender_id)
-    )
+    result = await session.execute(select(Wholesaler.id).where(Wholesaler.telegram_id == sender_id))
     return result.scalar_one_or_none()
 
 
-async def _check_duplicate(
-    vector: list[float], wholesaler_id: uuid.UUID | None
-) -> bool:
+async def _check_duplicate(vector: list[float], wholesaler_id: uuid.UUID | None) -> bool:
     # Dedup is per-wholesaler by design: the same product from different
     # wholesalers (with different rates) must be kept. Skip the check
     # entirely when the sender isn't linked to a known wholesaler.
@@ -256,6 +250,7 @@ async def process_message(payload: dict) -> None:
 
             if vector is not None:
                 from qdrant_client.models import PointStruct
+
                 qdrant_client = get_qdrant_client()
                 await qdrant_client.upsert(
                     collection_name=settings.qdrant_collection,
@@ -290,6 +285,7 @@ async def process_message(payload: dict) -> None:
             if qdrant_id is not None:
                 try:
                     from qdrant_client.models import PointIdsList
+
                     qdrant_client = get_qdrant_client()
                     await qdrant_client.delete(
                         collection_name=settings.qdrant_collection,
@@ -302,9 +298,7 @@ async def process_message(payload: dict) -> None:
             raise ProcessingError(str(exc)) from exc
 
 
-async def _write_log(
-    chat_id: int, msg_id: int, status: str, reason: str | None = None
-) -> None:
+async def _write_log(chat_id: int, msg_id: int, status: str, reason: str | None = None) -> None:
     from app.models.ingestion_log import IngestionLog
 
     async with AsyncSessionLocal() as session:

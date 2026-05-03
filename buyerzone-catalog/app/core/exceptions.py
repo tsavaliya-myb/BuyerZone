@@ -28,6 +28,7 @@ class ProcessingError(BuyerzoneError):
 
 # FastAPI exception handlers
 
+
 async def buyerzone_exception_handler(request: Request, exc: BuyerzoneError) -> JSONResponse:
     return JSONResponse(
         status_code=422,
