@@ -1,0 +1,870 @@
+# Buyerzone — Catalog Intelligence System
+## WhatsApp Ingestion Module — Implementation Document
+
+**Version:** 1.0 | **Status:** Draft | **Confidential**
+
+---
+
+## Table of Contents
+
+1. [Executive Summary](#1-executive-summary)
+2. [System Overview](#2-system-overview)
+3. [Technology Stack](#3-technology-stack)
+4. [Data Models](#4-data-models)
+5. [Detailed System Flow](#5-detailed-system-flow)
+6. [API Specification](#6-api-specification)
+7. [Project Structure](#7-project-structure)
+8. [Infrastructure & Deployment](#8-infrastructure--deployment)
+9. [Implementation Phases](#9-implementation-phases)
+10. [Security Considerations](#10-security-considerations)
+11. [Scalability & Module Integration](#11-scalability--module-integration)
+12. [Total Cost of Ownership](#12-total-cost-of-ownership)
+13. [Open Questions & Decisions Pending](#13-open-questions--decisions-pending)
+
+---
+
+## 1. Executive Summary
+
+Buyerzone's Telegram Ingestion Module already captures product listings from wholesaler Telegram groups. However, a significant portion of wholesalers exclusively or additionally broadcast via **WhatsApp groups and WhatsApp Channels**. This module extends catalog coverage to WhatsApp, ensuring no product listing is missed regardless of which platform a wholesaler uses.
+
+This document defines the architecture, data models, API contracts, infrastructure layout, and implementation roadmap for the **WhatsApp Catalog Ingestion Module**. It is designed as a **parallel ingestion lane** that feeds into the same PostgreSQL + Qdrant shared database, enabling unified search and analytics across all platforms.
+
+> **Module Scope:** This document covers WhatsApp ingestion only. The shared processing pipeline (CLIP, dedup, storage), search APIs, and analytics are defined in their respective module documents. This module reuses those components wherever possible and only introduces what is new.
+
+> **Prerequisite:** The Telegram Ingestion Module and its shared infrastructure (PostgreSQL, Qdrant, Redis, FastAPI, ARQ workers) must already be deployed before this module is added.
+
+---
+
+## 2. System Overview
+
+### 2.1 Problem Statement
+
+Wholesalers broadcast product images and pricing via WhatsApp groups and WhatsApp Channels daily. These messages are separate from Telegram — some wholesalers are WhatsApp-only, and others post to both platforms. Without a WhatsApp ingestion layer, Buyerzone has incomplete catalog coverage: a client asking for a product may be told it is unavailable when it was in fact posted on WhatsApp an hour earlier.
+
+### 2.2 Solution
+
+A dedicated WhatsApp listener microservice built on **Baileys** (Node.js) that authenticates as a WhatsApp user account, monitors admin-approved groups and channels in real time, downloads product images, and enqueues raw message payloads to the **shared Redis ARQ queue**. The existing Python ARQ workers then process these payloads through the same CLIP embedding, dedup, and dual-storage pipeline already used by the Telegram module.
+
+The result: a single unified product catalog searchable across both platforms with zero duplication of the processing infrastructure.
+
+### 2.3 High-Level Architecture
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│              WHATSAPP (Groups + Channels/Newsletters)                │
+│          Wholesaler A    Wholesaler B    Wholesaler N                │
+└──────────────────────────────┬───────────────────────────────────────┘
+                               │  WhatsApp Web Multi-Device (Baileys)
+┌──────────────────────────────▼───────────────────────────────────────┐
+│           WA LISTENER SERVICE  (Node.js / Baileys)                   │
+│   QR Auth → Whitelist Filter → Media Download → Payload Builder      │
+└──────────────────────────────┬───────────────────────────────────────┘
+                               │  Redis RPUSH  (same queue as Telegram)
+┌──────────────────────────────▼───────────────────────────────────────┐
+│          SHARED PROCESSING PIPELINE  (Python / ARQ Workers)          │
+│   CLIP Embedding → Dedup Check → PostgreSQL + Qdrant Write           │
+└──────────┬────────────────────────────────────────┬──────────────────┘
+           │                                        │
+┌──────────▼──────────┐              ┌──────────────▼──────────────────┐
+│    PostgreSQL        │              │          Qdrant                 │
+│  (Shared Catalog)    │              │   (Shared Vector Store)         │
+└──────────┬──────────┘              └─────────────┬────────────────────┘
+           │                                        │
+┌──────────▼────────────────────────────────────────▼───────────────────┐
+│                   FastAPI + Uvicorn  (Shared REST API)                 │
+│       /admin/whatsapp/*   (new)   +   /search/*  /products/*  (shared) │
+└────────────────────────────────────────────────────────────────────────┘
+```
+
+### 2.4 Key Design Principle: Thin Listener, Shared Pipeline
+
+The WhatsApp listener service does the **minimum work** before handing off:
+1. Authenticate and maintain a persistent session
+2. Filter incoming messages against the whitelist
+3. Download the media file
+4. Build a `MessagePayload` (same schema as Telegram payloads)
+5. Push to Redis
+
+Everything from CLIP embedding onward is handled by the **existing** Python ARQ workers. No duplication of processing logic.
+
+---
+
+## 3. Technology Stack
+
+### 3.1 New Components (WhatsApp Listener)
+
+| Component | Purpose | Layer |
+|---|---|---|
+| Node.js 20 LTS | Runtime for Baileys — required by the library | Runtime |
+| Baileys (`@whiskeysockets/baileys`) | Open-source WhatsApp Web multi-device client. Most capable WhatsApp automation library. | Ingestion |
+| ioredis | Node.js Redis client — pushes payloads to shared ARQ queue | Queue Bridge |
+| sharp | Fast image processing in Node — resize before upload, validate image bytes | Image Util |
+| pino | Structured JSON logging — matches Python service log format | Logging |
+| dotenv | Environment variable loading | Config |
+
+### 3.2 Reused Components (No Changes)
+
+| Component | Already Used By |
+|---|---|
+| Redis (ARQ queue) | Telegram Ingestion, ARQ Workers |
+| Python ARQ Workers (`process_message.py`) | Telegram pipeline — reused without modification |
+| CLIP singleton (`core/clip.py`) | Already loaded in workers |
+| PostgreSQL + SQLAlchemy models | Telegram module |
+| Qdrant client (`core/qdrant.py`) | Telegram module |
+| Cloudflare R2 storage | Telegram module |
+| FastAPI app (`app/main.py`) | Telegram module — new routers added |
+
+### 3.3 Rationale for Key Choices
+
+#### Baileys over WhatsApp Business API
+The WhatsApp Business API (Meta Cloud API) requires Facebook Business Manager approval, charges per conversation (₹0.50–₹1.20 per 24h session), and is designed for one-to-many business messaging — not for silently reading groups you are already a member of. Baileys implements the WhatsApp Web multi-device protocol, operates as a regular user account, and has zero per-message cost.
+
+#### Baileys over whatsapp-web.js
+`whatsapp-web.js` drives a headless Chromium browser with the WhatsApp Web interface, consuming 800MB–1.5GB RAM. Baileys implements the WebSocket protocol directly with no browser dependency, running in under 150MB RAM — critical for a shared 4GB VPS.
+
+#### Node.js listener bridged to Python workers
+Baileys is Node.js only — there is no mature Python equivalent. Rather than rewriting the entire processing pipeline in Node.js, we use Redis as the language bridge. The Node.js service does only I/O work (read message, download media, enqueue). All CPU-intensive work (CLIP inference, database writes) stays in the existing Python workers.
+
+#### ioredis over node-redis
+ioredis has a stable, well-documented ARQ-compatible list push interface and handles reconnection internally. It supports the `RPUSH` command needed to push jobs into ARQ's job lists.
+
+---
+
+## 4. Data Models
+
+### 4.1 Schema Changes to Existing Tables
+
+#### monitored_chats — Add platform Column
+
+The existing `monitored_chats` table is extended with a `platform` column to distinguish Telegram and WhatsApp entries. Existing rows default to `telegram`.
+
+```sql
+ALTER TABLE monitored_chats
+  ADD COLUMN platform VARCHAR(20) NOT NULL DEFAULT 'telegram';
+
+-- Update unique constraint: same chat_id can exist on both platforms
+ALTER TABLE monitored_chats DROP CONSTRAINT monitored_chats_chat_id_key;
+ALTER TABLE monitored_chats ADD CONSTRAINT monitored_chats_chat_id_platform_unique
+  UNIQUE (chat_id, platform);
+```
+
+> `chat_id` for WhatsApp is the JID string (e.g. `120363000000000001@g.us`). Store it as TEXT or cast the numeric portion to BIGINT. Use TEXT to avoid JID truncation.
+
+Extend `chat_id` column type if currently BIGINT:
+```sql
+ALTER TABLE monitored_chats ALTER COLUMN chat_id TYPE TEXT;
+```
+
+#### monitored_chats — Full Updated Definition
+
+```sql
+-- chat_type values: group | channel | supergroup (Telegram) | wa_group | wa_channel (WhatsApp)
+-- platform values: telegram | whatsapp
+```
+
+No other structural changes — `platform` + updated `chat_id` type is sufficient.
+
+#### products — source_platform Already Exists
+
+The `products.source_platform` column (`DEFAULT 'telegram'`) already handles multi-platform. WhatsApp products are inserted with `source_platform = 'whatsapp'`. No schema change required.
+
+#### ingestion_logs — No Changes Required
+
+The existing `ingestion_logs` table captures `chat_id`, `telegram_msg_id` (reuse for WhatsApp message ID), `status`, and `product_id`. The column name `telegram_msg_id` is a minor naming inconsistency — tolerable, or rename via migration:
+
+```sql
+ALTER TABLE ingestion_logs RENAME COLUMN telegram_msg_id TO message_id;
+-- Apply same rename to products table:
+ALTER TABLE products RENAME COLUMN telegram_msg_id TO message_id;
+```
+
+> **Decision pending:** Rename or tolerate. See Section 13.
+
+### 4.2 New Table: wa_auth_sessions (Optional Persistence)
+
+Baileys auth state can be stored on disk (default) or in PostgreSQL for easier backup and multi-instance scenarios.
+
+```sql
+CREATE TABLE wa_auth_sessions (
+  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  session_key VARCHAR(500) NOT NULL UNIQUE,   -- Baileys internal key
+  session_data JSONB NOT NULL,                -- Serialised auth state
+  updated_at  TIMESTAMPTZ DEFAULT NOW()
+);
+```
+
+> This table is optional. The default approach (disk-based auth) is simpler and recommended for single-instance deployments. See Section 5.1.
+
+### 4.3 MessagePayload — Shared Queue Contract
+
+The Node.js listener and the Python workers communicate via this JSON payload pushed to Redis. It is **identical in shape** to the Telegram payload so workers need zero branching:
+
+```json
+{
+  "source_platform": "whatsapp",
+  "chat_id": "120363000000000001@g.us",
+  "chat_name": "Buyerzone Wholesalers WA",
+  "chat_type": "wa_group",
+  "message_id": "3EB0A1B2C3D4E5F6A7B8",
+  "sender_id": "919876543210@s.whatsapp.net",
+  "caption": "Shirt ₹350 available in all sizes",
+  "image_data_b64": "<base64-encoded-jpeg>",
+  "received_at": "2026-05-03T10:30:00Z"
+}
+```
+
+> `image_data_b64`: The Node.js service downloads the image and encodes it as base64 before pushing. This avoids file-system coupling between the Node container and Python worker containers. Max image size after resize: ~300KB.
+
+---
+
+## 5. Detailed System Flow
+
+### 5.1 Authentication Flow (One-Time Setup)
+
+Baileys uses the **WhatsApp Web multi-device protocol**. Authentication generates a set of cryptographic keys stored as auth state. This is a one-time operation.
+
+```
+Step 1: Developer runs WA listener container for first time
+        → Baileys generates QR code
+        → QR printed to container stdout as ASCII art
+        → Developer scans QR with WhatsApp mobile app
+          (WhatsApp → Linked Devices → Link a Device)
+
+Step 2: Baileys receives auth credentials
+        → Auth state saved to /app/wa_sessions/auth_state/
+        → Session is now persistent — no QR needed on restart
+
+Step 3: All subsequent startups
+        → Baileys loads auth state from disk
+        → Connects to WhatsApp WebSocket servers
+        → No QR required unless session is revoked
+
+Note: Session is revoked if:
+  - The linked device is manually removed from WhatsApp mobile
+  - The phone is inactive for 14+ days (WhatsApp policy)
+  - The number is banned
+  Revocation requires re-scanning QR code.
+```
+
+**Pairing Code Alternative (Headless Servers)**
+
+If the server has no display and QR cannot be scanned easily, Baileys supports pairing via an 8-digit code:
+
+```
+→ requestPairingCode(phoneNumber) call in Baileys
+→ Code displayed in logs (e.g. "ABCD-1234")
+→ Developer enters code in WhatsApp mobile:
+  WhatsApp → Linked Devices → Link with phone number instead
+```
+
+### 5.2 Admin — Adding Monitored Chats
+
+Admins interact via the Admin API. The WhatsApp listener service exposes an internal HTTP endpoint to list and validate joined groups.
+
+```
+Admin Request: POST /admin/whatsapp/chats/search  { "name": "Buyerzone WA" }
+
+  → FastAPI calls WA Listener internal HTTP endpoint: GET /wa-internal/groups
+  → Baileys fetches all joined group metadata via groupFetchAllParticipating()
+  → Filter groups where subject contains search name (case-insensitive)
+  → Also search WhatsApp Channels via newsletterSubscribed()
+  → Return list: [ { jid, name, type, participant_count } ]
+
+Admin Request: POST /admin/whatsapp/chats/add  { "jid": "120363...@g.us", "chat_name": "..." }
+
+  → Validate JID exists in Baileys joined groups
+  → INSERT into monitored_chats (platform='whatsapp', chat_type='wa_group')
+  → Notify WA Listener via internal endpoint: POST /wa-internal/whitelist/reload
+  → In-memory JID set in Node.js service updated immediately
+  → Listener begins capturing messages from this JID instantly
+```
+
+### 5.3 Ingestion Flow (Real-Time, 24/7)
+
+```
+Event: New message arrives via Baileys 'messages.upsert' event
+                │
+                ▼
+FILTER 1: Is message type 'notify'?  (not history sync, not reaction)
+          NO  → discard silently
+          YES → continue
+                │
+                ▼
+FILTER 2: Is message.key.remoteJid in monitored JID whitelist?
+          NO  → discard silently
+          YES → continue
+                │
+                ▼
+FILTER 3: Does message contain an image?
+          (imageMessage or viewOnceMessage with imageMessage)
+          NO  → discard (text-only messages, stickers, documents)
+          YES → continue
+                │
+                ▼
+FILTER 4: Does caption contain "out of stock", "stock out",
+          "not available", "sold out" (case-insensitive)?
+          YES → log as skipped (out of stock) → discard
+          NO  → continue
+                │
+                ▼
+DOWNLOAD: downloadMediaMessage(message, 'buffer')
+          → Returns raw image Buffer
+          → Validate magic bytes: JPEG (FF D8 FF) or PNG (89 50 4E 47)
+          → Resize to max 1024px longest edge using sharp (preserve aspect)
+          → Encode to base64
+                │
+                ▼
+BUILD:    Construct MessagePayload JSON object
+          → source_platform: 'whatsapp'
+          → chat_id: message.key.remoteJid
+          → message_id: message.key.id
+          → sender_id: message.key.participant || message.key.remoteJid
+          → caption: imageMessage.caption || ''
+          → image_data_b64: base64 string
+          → received_at: ISO timestamp from message.messageTimestamp
+                │
+                ▼
+ENQUEUE:  ioredis.rpush('arq:queue:process_message', JSON.stringify(payload))
+          → Node.js listener returns immediately (non-blocking)
+          → Python ARQ worker picks up and processes
+```
+
+### 5.4 Processing Pipeline (Existing Python Workers — No Changes)
+
+The ARQ worker's `process_message` task already handles both platforms via `source_platform` field. The only difference is how the image arrives:
+
+- **Telegram path:** image arrives as Telegram `file_id` → downloaded in Python via Pyrogram
+- **WhatsApp path:** image arrives pre-downloaded as base64 in payload → decoded in Python
+
+To support this, `process_message.py` needs a small branch at the download step:
+
+```python
+if payload.source_platform == "telegram":
+    image_bytes = await download_telegram_image(payload.file_id)
+elif payload.source_platform == "whatsapp":
+    image_bytes = base64.b64decode(payload.image_data_b64)
+```
+
+Everything downstream (validation, R2 upload, CLIP, dedup, PostgreSQL+Qdrant write) is **identical**.
+
+```
+ARQ Worker picks up MessagePayload (whatsapp or telegram — same code path)
+                │
+                ▼
+DECODE:   base64 decode → raw image bytes
+          → Validate magic bytes
+          → Resize to 224×224 for CLIP (preserve original separately)
+                │
+                ▼
+UPLOAD:   Upload original to Cloudflare R2
+          Key: products/{platform}/{chat_id}/{msg_id}/{uuid}.jpg
+                │
+                ▼
+PARSE:    Extract price from caption (same regex — INR)
+          Extract product name
+                │
+                ▼
+EMBED:    CLIP ViT-B/32 → 512-dim normalised vector
+                │
+                ▼
+DEDUP:    Qdrant cosine similarity > 0.96, same wholesaler, last 30 days
+          DUPLICATE → log → skip
+          UNIQUE    → continue
+                │
+                ▼
+PERSIST:  BEGIN transaction
+          1. INSERT products (source_platform='whatsapp')
+          2. Upsert Qdrant point
+          3. INSERT ingestion_logs
+          COMMIT
+```
+
+### 5.5 WhatsApp Channels (Newsletters)
+
+WhatsApp Channels (called "Newsletters" in Baileys) behave differently from groups:
+
+| Property | Groups | Channels (Newsletters) |
+|---|---|---|
+| JID suffix | `@g.us` | `@newsletter` |
+| Sender identity | Participant JID available | Admin only — anonymous |
+| Fetch API | `groupFetchAllParticipating()` | `newsletterSubscribed()` |
+| Message event | `messages.upsert` | `messages.upsert` (same event) |
+| Join mechanism | Invite link | Subscribe button |
+
+The listener handles both transparently — the same `messages.upsert` handler fires for both. The `chat_type` in `monitored_chats` is set to `wa_group` or `wa_channel` for admin visibility, but the ingestion logic is identical.
+
+---
+
+## 6. API Specification
+
+All new endpoints are under `/api/v1/admin/whatsapp/`. They follow the same JWT Bearer auth pattern as the Telegram admin endpoints.
+
+### 6.1 New WhatsApp Admin Endpoints
+
+| Endpoint | Description | Auth |
+|---|---|---|
+| `GET /admin/whatsapp/status` | Baileys connection status: connected, QR pending, disconnected. | JWT Admin |
+| `GET /admin/whatsapp/qr` | Returns current QR code as base64 PNG for admin UI display. Only available when status is `qr_pending`. | JWT Admin |
+| `POST /admin/whatsapp/pair` | Request pairing code for headless auth. Body: `{ "phone": "+919876543210" }`. | JWT Admin |
+| `POST /admin/whatsapp/chats/search` | Search joined WA groups and channels by name. | JWT Admin |
+| `POST /admin/whatsapp/chats/add` | Add WA JID to monitored whitelist. | JWT Admin |
+| `DELETE /admin/whatsapp/chats/{id}` | Remove WA chat from whitelist. | JWT Admin |
+| `GET /admin/whatsapp/chats` | List all monitored WA chats with status and message counts. | JWT Admin |
+
+### 6.2 Shared Endpoints — No Changes Required
+
+The following existing endpoints work for WhatsApp products automatically because `source_platform` is stored per product:
+
+| Endpoint | WhatsApp Support |
+|---|---|
+| `GET /products` | Add `?platform=whatsapp` filter |
+| `GET /products/{id}` | Works — returns `source_platform: "whatsapp"` |
+| `POST /search/image` | Works — searches across all platforms |
+| `GET /search/text` | Works — full-text search covers all products |
+| `GET /admin/logs` | Add `?platform=whatsapp` filter |
+| `GET /admin/stats` | Returns per-platform breakdown |
+
+### 6.3 Internal WA Listener HTTP API
+
+The WA Listener (Node.js) exposes a small internal HTTP API consumed only by FastAPI. Not exposed externally.
+
+| Endpoint | Description |
+|---|---|
+| `GET /wa-internal/status` | Connection state + session info |
+| `GET /wa-internal/qr` | Base64 QR code (when pending) |
+| `GET /wa-internal/groups` | All joined groups + channels metadata |
+| `POST /wa-internal/whitelist/reload` | Trigger in-memory whitelist refresh from DB |
+| `POST /wa-internal/pair` | Initiate pairing code flow |
+
+Internal API is bound to `127.0.0.1` within Docker network only.
+
+---
+
+## 7. Project Structure
+
+### 7.1 New: WhatsApp Listener Service (Node.js)
+
+```
+wa-listener/                         # New top-level service directory
+├── src/
+│   ├── index.ts                     # Entry point — starts Baileys + HTTP server
+│   ├── config.ts                    # Env var loading (dotenv)
+│   ├── auth.ts                      # Auth state management (disk or Postgres)
+│   ├── listener.ts                  # Baileys client setup + message handler
+│   ├── whitelist.ts                 # In-memory JID set + DB sync
+│   ├── downloader.ts                # downloadMediaMessage wrapper + validation
+│   ├── payload.ts                   # MessagePayload builder
+│   ├── queue.ts                     # ioredis RPUSH to ARQ queue
+│   ├── http.ts                      # Internal HTTP API (Express, minimal)
+│   └── logger.ts                    # pino structured logger
+├── package.json
+├── tsconfig.json
+└── Dockerfile                       # Node 20 Alpine
+```
+
+### 7.2 Changes to Existing Python Services
+
+```
+app/
+├── api/v1/
+│   ├── admin.py                     # EXISTING — Telegram admin routes
+│   └── whatsapp_admin.py            # NEW — /admin/whatsapp/* routes
+│
+├── services/
+│   ├── wa_chat_resolver.py          # NEW — calls WA Listener internal API
+│   └── processing.py                # MODIFIED — add base64 decode branch
+│
+├── workers/tasks/
+│   └── process_message.py           # MODIFIED — handle image_data_b64
+│
+└── schemas/
+    └── whatsapp_admin.py            # NEW — Pydantic schemas for WA admin APIs
+```
+
+### 7.3 Full Updated Directory Tree
+
+```
+buyerzone-catalog/
+├── app/                             # Python FastAPI (mostly unchanged)
+│   ├── api/v1/
+│   │   ├── admin.py
+│   │   ├── whatsapp_admin.py        # NEW
+│   │   ├── search.py
+│   │   ├── products.py
+│   │   └── internal.py
+│   ├── services/
+│   │   ├── ingestion.py             # Telegram listener (unchanged)
+│   │   ├── processing.py            # MODIFIED
+│   │   ├── wa_chat_resolver.py      # NEW
+│   │   ├── search.py
+│   │   ├── storage.py
+│   │   ├── chat_resolver.py
+│   │   └── staleness.py
+│   ├── workers/tasks/
+│   │   ├── process_message.py       # MODIFIED
+│   │   └── staleness_check.py
+│   └── schemas/
+│       ├── whatsapp_admin.py        # NEW
+│       └── ...
+│
+├── wa-listener/                     # NEW — Node.js Baileys service
+│   ├── src/
+│   │   ├── index.ts
+│   │   ├── auth.ts
+│   │   ├── listener.ts
+│   │   ├── whitelist.ts
+│   │   ├── downloader.ts
+│   │   ├── payload.ts
+│   │   ├── queue.ts
+│   │   └── http.ts
+│   ├── package.json
+│   ├── tsconfig.json
+│   └── Dockerfile
+│
+├── alembic/versions/
+│   └── xxxx_add_platform_to_monitored_chats.py   # NEW migration
+│
+├── wa_sessions/                     # Baileys auth state (gitignored)
+├── docker-compose.yml               # MODIFIED — add wa_listener service
+├── .env.example                     # MODIFIED — add WA env vars
+└── pyproject.toml
+```
+
+---
+
+## 8. Infrastructure & Deployment
+
+### 8.1 New Docker Compose Service
+
+Add to existing `docker-compose.yml`:
+
+```yaml
+services:
+
+  # --- Existing services unchanged ---
+  api:
+    build: .
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2
+    env_file: .env
+    depends_on: [postgres, redis, qdrant]
+    volumes:
+      - ./sessions:/app/sessions
+
+  worker:
+    build: .
+    command: python -m arq app.workers.arq_worker.WorkerSettings
+    env_file: .env
+    depends_on: [postgres, redis, qdrant]
+    volumes:
+      - ./sessions:/app/sessions
+
+  ingestion:
+    build: .
+    command: python -m app.services.ingestion
+    env_file: .env
+    restart: always
+    volumes:
+      - ./sessions:/app/sessions
+
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: buyerzone
+      POSTGRES_USER: buyerzone
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    volumes:
+      - qdrant_data:/qdrant/storage
+
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - redis_data:/data
+
+  # --- NEW: WhatsApp Listener ---
+  wa_listener:
+    build: ./wa-listener
+    restart: always
+    env_file: .env
+    environment:
+      WA_INTERNAL_PORT: 3001
+    ports: []                         # Not exposed externally
+    expose:
+      - "3001"                        # Internal only — accessible to api service
+    depends_on: [redis, postgres]
+    volumes:
+      - ./wa_sessions:/app/wa_sessions   # Persist Baileys auth state
+
+volumes:
+  postgres_data:
+  qdrant_data:
+  redis_data:
+```
+
+### 8.2 New Environment Variables
+
+Add to `.env` (and `.env.example`):
+
+```env
+# WhatsApp Listener
+WA_LISTENER_URL=http://wa_listener:3001     # Internal Docker network URL
+WA_INTERNAL_SECRET=your_internal_secret    # Shared secret for FastAPI → WA listener calls
+WA_SESSION_DIR=/app/wa_sessions            # Auth state directory inside container
+WA_PHONE_NUMBER=+919876543210              # Business number (for pairing code flow)
+WA_LOG_LEVEL=info
+```
+
+### 8.3 wa-listener Dockerfile
+
+```dockerfile
+FROM node:20-alpine
+
+WORKDIR /app
+
+# Install dependencies
+COPY package.json package-lock.json ./
+RUN npm ci --only=production
+
+# Build TypeScript
+COPY tsconfig.json ./
+COPY src/ ./src/
+RUN npm run build
+
+# Session directory
+RUN mkdir -p /app/wa_sessions
+
+CMD ["node", "dist/index.js"]
+```
+
+### 8.4 wa-listener package.json (Key Dependencies)
+
+```json
+{
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.0",
+    "ioredis": "^5.4.1",
+    "sharp": "^0.33.4",
+    "express": "^4.19.2",
+    "pino": "^9.2.0",
+    "dotenv": "^16.4.5"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.5",
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.14.0"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "ts-node src/index.ts"
+  }
+}
+```
+
+### 8.5 First-Run QR Authentication (Operations Runbook)
+
+```bash
+# 1. Start only the wa_listener service
+docker compose up wa_listener
+
+# 2. Watch logs for QR code
+docker compose logs -f wa_listener
+# Output will show QR ASCII art or a message to scan
+
+# 3. On first run — Baileys prints QR to stdout
+#    Scan with WhatsApp mobile: Linked Devices → Link a Device
+
+# 4. Auth state saved to ./wa_sessions/auth_state/
+# 5. Service connects and prints "Connection open"
+
+# OR — Headless pairing code flow:
+# POST /api/v1/admin/whatsapp/pair { "phone": "+919876543210" }
+# → Returns 8-digit code
+# → Enter in WhatsApp mobile: Linked Devices → Link with phone number
+```
+
+---
+
+## 9. Implementation Phases
+
+### Phase 1 — Baileys Service Foundation (Week 1)
+
+**Goal:** WA Listener container connects to WhatsApp and maintains a stable session.
+
+1. Set up `wa-listener/` Node.js project with TypeScript
+2. Implement Baileys authentication — disk-based auth state
+3. Implement QR display to stdout + pairing code HTTP endpoint
+4. Implement reconnection logic with exponential backoff
+5. Internal HTTP API skeleton (`/wa-internal/status`, `/wa-internal/qr`)
+6. Add `wa_listener` service to docker-compose
+7. Verify: container connects, session persists across restarts
+
+### Phase 2 — Schema Migration & Whitelist (Week 1–2)
+
+**Goal:** Database supports multi-platform chats; admin can add WA groups.
+
+1. Alembic migration: add `platform` column to `monitored_chats`
+2. Alembic migration: rename `telegram_msg_id` → `message_id` (if decided)
+3. Implement `whitelist.ts` — in-memory JID set, loads from PostgreSQL on startup
+4. Implement `/wa-internal/groups` — fetches joined groups + channels via Baileys
+5. Implement `/admin/whatsapp/chats/*` FastAPI routes + `wa_chat_resolver.py`
+6. Verify: admin can search WA groups, add to whitelist, whitelist reloads in Node.js
+
+### Phase 3 — Message Listener + Queue Bridge (Week 2)
+
+**Goal:** Product image messages from whitelisted WA groups are enqueued to Redis.
+
+1. Implement `listener.ts` — Baileys `messages.upsert` handler
+2. Implement all filter stages (type, whitelist, has image, out-of-stock text)
+3. Implement `downloader.ts` — `downloadMediaMessage` with validation + resize
+4. Implement `payload.ts` — build `MessagePayload` JSON
+5. Implement `queue.ts` — `ioredis.rpush` into ARQ queue
+6. Verify: send test image to monitored WA group → payload appears in Redis
+
+### Phase 4 — Python Worker Integration (Week 2–3)
+
+**Goal:** WhatsApp payloads flow through the existing processing pipeline end-to-end.
+
+1. Modify `process_message.py` — add `image_data_b64` branch (base64 decode)
+2. Verify R2 upload succeeds for WhatsApp images
+3. Verify CLIP embedding generated correctly
+4. Verify PostgreSQL insert with `source_platform='whatsapp'`
+5. Verify Qdrant point inserted with correct payload
+6. Verify dedup logic works cross-platform (same product, different platforms)
+7. End-to-end test: WA group message → product searchable via `/search/image`
+
+### Phase 5 — Admin Dashboard & Hardening (Week 3)
+
+**Goal:** Operations team can manage WA chats, monitor ingestion health.
+
+1. `/admin/whatsapp/status` — surface Baileys connection state to admin UI
+2. `/admin/stats` — add WhatsApp breakdown to existing stats endpoint
+3. `/admin/logs` — add `?platform=whatsapp` filter
+4. Session revocation detection — alert admin when QR re-auth needed
+5. Dead-letter queue handling for WA failed jobs (same as Telegram)
+6. Load test: 100 WA messages/hour sustained → verify no queue backlog
+7. Documentation: operations runbook for re-authentication
+
+---
+
+## 10. Security Considerations
+
+### 10.1 Authentication Layers
+
+| Layer | Mechanism |
+|---|---|
+| Admin WhatsApp API | JWT Bearer token — same as existing admin endpoints |
+| FastAPI → WA Listener | Shared secret header (`X-Internal-Secret`) on all `/wa-internal/*` calls |
+| Baileys Session | Auth state stored with `700` permissions. Never committed to git. |
+| WhatsApp Account | Dedicated business number — not personal. Registered as linked device. |
+
+### 10.2 Baileys Session Security
+
+- Auth state directory (`./wa_sessions/`) excluded from git via `.gitignore`
+- Auth state backed up to R2 on schedule (same as PostgreSQL backups)
+- If session file is compromised, revoke immediately via WhatsApp mobile: Settings → Linked Devices → Remove device
+- Session file contains cryptographic keys — treat with same sensitivity as private keys
+
+### 10.3 WhatsApp Account Risk
+
+WhatsApp aggressively bans accounts that exhibit automation behaviour. Mitigations:
+
+| Risk | Mitigation |
+|---|---|
+| Account ban for automation | Use a dedicated business number, not a personal one |
+| Ban for high message volume | We are a **reader** only — we never send messages |
+| Session invalidation | Reconnection logic + admin alert on disconnect |
+| Rate limiting by WhatsApp | Baileys handles WebSocket reconnection internally |
+| Number reported as spam | Only join groups/channels through legitimate invite links |
+
+### 10.4 Media Privacy
+
+- WhatsApp images in monitored groups are business product listings shared voluntarily by wholesalers
+- Images are stored in the same Cloudflare R2 bucket as Telegram images under `products/whatsapp/...`
+- No end-to-end encrypted personal messages are read — only whitelisted business group content
+
+### 10.5 Internal API Isolation
+
+- WA Listener HTTP API binds to container-internal network only
+- Not exposed via Nginx or any external port mapping
+- Docker network isolates it from the internet
+- FastAPI calls it using Docker service DNS (`http://wa_listener:3001`)
+
+---
+
+## 11. Scalability & Module Integration
+
+### 11.1 Capacity Estimate (WhatsApp Contribution)
+
+| Metric | Estimate |
+|---|---|
+| WA messages per day | 200–500 (subset of wholesalers on WA) |
+| Additional products/year | ~50,000 |
+| Combined catalog after 1 year | ~150,000 (Telegram + WhatsApp) |
+| Qdrant memory increase | ~100MB additional (50k × 512-dim) |
+| R2 storage increase | ~25GB additional |
+| Worker CPU impact | Negligible — same CLIP pipeline |
+
+### 11.2 Cross-Platform Dedup
+
+A wholesaler may post the same product on both Telegram and WhatsApp. The existing Qdrant dedup (cosine similarity > 0.96 within 30 days, same `wholesaler_id`) already handles this — regardless of which platform the message arrived on. No additional logic required, provided the same `wholesaler_id` is assigned to a wholesaler across both platforms.
+
+> **Admin action:** When registering a wholesaler, link both their Telegram ID and their WhatsApp JID to the same `wholesaler` row. This enables cross-platform dedup.
+
+Schema addition to `wholesalers` table:
+```sql
+ALTER TABLE wholesalers ADD COLUMN wa_jid VARCHAR(100) UNIQUE;
+```
+
+### 11.3 Module Integration Points
+
+Downstream modules consume the unified product catalog without needing to know the source platform:
+
+- **Analytics Module** — can now show Telegram vs WhatsApp contribution charts
+- **Search API** — returns products from both platforms in unified results
+- **Order Management** — wholesaler contact info includes both Telegram and WhatsApp contact
+- **Staleness Module** — staleness logic applies equally to all products regardless of platform
+
+### 11.4 Scaling Path
+
+- **Multiple WA accounts:** Run multiple `wa_listener` containers with different session directories and phone numbers. Each pushes to the same Redis queue. Useful if one account covers a different set of groups.
+- **Worker scaling:** ARQ workers are stateless — add more `worker` containers to handle increased queue volume. No changes to WA listener.
+- **Baileys WebSocket:** Single connection handles all groups the account is joined to — no per-group resource cost.
+
+---
+
+## 12. Total Cost of Ownership
+
+| Component | Additional Cost |
+|---|---|
+| wa_listener container | ~50MB RAM on existing VPS — **zero additional server cost** |
+| Baileys library | Free — open source (MIT) |
+| WhatsApp account | ₹0/month — standard WhatsApp account on a SIM |
+| Node.js 20 Alpine image | ~60MB disk — negligible |
+| Additional R2 storage (~25GB/year) | ~$0.38/month |
+| Additional PostgreSQL storage | Negligible |
+| **Total additional monthly cost** | **~$0.38/month** |
+
+> The WhatsApp module adds near-zero marginal cost to the existing infrastructure. The entire combined system (Telegram + WhatsApp ingestion, CLIP, dual-store) runs on the same single Hetzner VPS.
+
+---
+
+## 13. Open Questions & Decisions Pending
+
+| Question | Details | Recommendation | Owner's Response |
+|---|---|---|---|
+| Rename `telegram_msg_id` column | Rename to `message_id` in `products` and `ingestion_logs` for platform neutrality? | Yes — clean up now before WA data enters the tables. One migration. | |
+| Wholesaler WA JID mapping | Add `wa_jid` column to `wholesalers` table for cross-platform dedup and contact info? | Yes — required for accurate dedup and order management integration. | |
+| Auth method: QR vs pairing code | Which flow to use for initial WA authentication? | Pairing code preferred for headless VPS — no need to transfer QR image. | |
+| WA session backup strategy | Disk-only or also persist Baileys auth state to `wa_auth_sessions` PostgreSQL table? | Disk + R2 backup via cron. PostgreSQL table adds complexity without benefit at this scale. | |
+| View-once message handling | WhatsApp "view once" images — Baileys can still download them. Should they be ingested? | Yes — wholesalers sometimes use view-once for freshness signalling. Ingest and store. | |
+| Stale product threshold for WA | Same 30-day default as Telegram, or different? | Same default — keep configuration unified. Configurable per wholesaler. | |
+| Cross-platform dedup scope | Dedup across platforms (same image from WA + Telegram = 1 product) or per-platform only? | Cross-platform — same `wholesaler_id` + cosine > 0.96 already handles it. Verify. | |
+
+---
+
+*Buyerzone Catalog Intelligence System — WhatsApp Ingestion Module — v1.0 — Confidential*

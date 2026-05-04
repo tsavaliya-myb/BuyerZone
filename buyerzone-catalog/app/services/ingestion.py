@@ -381,7 +381,7 @@ async def main() -> None:
     # Run uvicorn in a thread so it doesn't starve Pyrogram's update dispatcher
     config = uvicorn.Config(
         internal_app,
-        host="127.0.0.1",
+        host="0.0.0.0",
         port=settings.ingestion_internal_port,
         log_level="warning",
     )
