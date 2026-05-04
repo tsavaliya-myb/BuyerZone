@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.core.qdrant import get_qdrant_client
 from app.core.redis import get_redis
-from app.core.security import verify_internal_token
+from app.core.security import get_current_user
 from app.models.product import Product
 from app.models.wholesaler import Wholesaler
 from app.schemas.admin import WholesalerResponse
@@ -20,7 +20,7 @@ router = APIRouter(prefix="/internal", tags=["internal"])
 async def recent_products(
     n: int = Query(default=50, ge=1, le=500),
     db: AsyncSession = Depends(get_db),
-    _=Depends(verify_internal_token),
+    _=Depends(get_current_user),
 ):
     result = await db.execute(
         select(Product)
@@ -34,7 +34,7 @@ async def recent_products(
 @router.get("/wholesalers/active", response_model=list[WholesalerResponse])
 async def active_wholesalers(
     db: AsyncSession = Depends(get_db),
-    _=Depends(verify_internal_token),
+    _=Depends(get_current_user),
 ):
     result = await db.execute(
         select(Wholesaler).where(Wholesaler.is_active.is_(True)).order_by(Wholesaler.name)
@@ -46,7 +46,7 @@ async def active_wholesalers(
 async def bulk_update_status(
     payload: dict,
     db: AsyncSession = Depends(get_db),
-    _=Depends(verify_internal_token),
+    _=Depends(get_current_user),
 ):
     """payload: { product_ids: [...], status: "stale" }"""
     import uuid
