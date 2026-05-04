@@ -6,6 +6,7 @@ on:
     paths:
       - 'buyerzone-catalog/**'
       - '.github/workflows/deploy.yml'
+      - 'docker-compose.prod.yml'
   pull_request:
     branches: [main]
     paths:
