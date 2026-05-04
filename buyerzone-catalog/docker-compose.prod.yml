@@ -1,7 +1,10 @@
 services:
 
   api:
-    image: ghcr.io/${GHCR_OWNER:-your-org}/buyerzone-catalog:${IMAGE_TAG:-latest}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: buyerzone-catalog:local
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
     env_file: .env
     ports:
@@ -23,7 +26,7 @@ services:
         max-file: "3"
 
   worker:
-    image: ghcr.io/${GHCR_OWNER:-your-org}/buyerzone-catalog:${IMAGE_TAG:-latest}
+    image: buyerzone-catalog:local
     command: python -m arq app.workers.arq_worker.WorkerSettings
     env_file: .env
     depends_on:
@@ -43,7 +46,7 @@ services:
         max-file: "3"
 
   ingestion:
-    image: ghcr.io/${GHCR_OWNER:-your-org}/buyerzone-catalog:${IMAGE_TAG:-latest}
+    image: buyerzone-catalog:local
     command: python -m app.services.ingestion
     env_file: .env
     depends_on:

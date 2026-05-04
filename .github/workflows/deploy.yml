@@ -171,52 +171,37 @@ jobs:
   deploy:
     name: Deploy to Hostinger VPS
     runs-on: ubuntu-latest
-    needs: build
+    needs: test
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     environment: production   # Requires manual approval gate if configured
 
     steps:
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1.0.3
-        env:
-          IMAGE_TAG: sha-${{ needs.build.outputs.short-sha }}
-          REGISTRY: ghcr.io
-          IMAGE_FULL: ghcr.io/${{ env.IMAGE_NAME }}
-          GH_ACTOR: ${{ github.actor }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
-          envs: IMAGE_TAG,REGISTRY,IMAGE_FULL,GH_ACTOR,GH_TOKEN
           script: |
             set -e
 
             APP_DIR="${{ secrets.VPS_APP_DIR }}"
-            echo "🚀 Starting deployment of tag: $IMAGE_TAG"
             cd "$APP_DIR"
 
-            # Pull latest repo changes (compose file updates, migrations, etc.)
+            # Pull latest code
             git pull origin main
 
-            # Authenticate with GHCR on the VPS
-            echo "$GH_TOKEN" | docker login ghcr.io -u "$GH_ACTOR" --password-stdin
+            # Build image locally on VPS (uses Docker layer cache — fast after first run)
+            echo "🔨 Building image..."
+            docker compose -f docker-compose.prod.yml build api
 
-            # Pull the new image
-            echo "📥 Pulling image: $IMAGE_FULL:$IMAGE_TAG"
-            docker pull "$IMAGE_FULL:$IMAGE_TAG"
-            docker pull "$IMAGE_FULL:latest"
-
-            # Run database migrations BEFORE switching traffic
+            # Run database migrations
             echo "📦 Running Alembic migrations..."
-            IMAGE_TAG="$IMAGE_TAG" docker compose \
-              -f docker-compose.prod.yml run --rm api \
-              alembic upgrade head
+            docker compose -f docker-compose.prod.yml run --rm api alembic upgrade head
 
-            # Rolling restart — only app services (not DBs)
+            # Rolling restart
             echo "♻️  Restarting api, worker, ingestion..."
-            IMAGE_TAG="$IMAGE_TAG" docker compose \
-              -f docker-compose.prod.yml up -d \
+            docker compose -f docker-compose.prod.yml up -d \
               --no-deps --remove-orphans \
               api worker ingestion
 
@@ -229,16 +214,16 @@ jobs:
                 break
               fi
               if [ $i -eq 5 ]; then
-                echo "❌ Health check failed after 5 attempts — rolling back to latest"
-                IMAGE_TAG=latest docker compose \
-                  -f docker-compose.prod.yml up -d \
-                  --no-deps api worker ingestion
+                echo "❌ Health check failed — rolling back"
+                git stash
+                docker compose -f docker-compose.prod.yml build api
+                docker compose -f docker-compose.prod.yml up -d --no-deps api worker ingestion
                 exit 1
               fi
               echo "  Retry $i/5..."
             done
 
-            # Clean up dangling images older than 72h
-            docker image prune -f --filter "until=72h" || true
+            # Clean up dangling images
+            docker image prune -f || true
 
-            echo "🎉 Deployment complete — running: $IMAGE_TAG"
+            echo "🎉 Deployment complete"
