@@ -33,7 +33,10 @@ services:
       - qdrant_data:/qdrant/storage
 
   api:
-    image: ${IMAGE_FULL}:${IMAGE_TAG:-latest}
+    build:
+      context: ./buyerzone-catalog
+      dockerfile: Dockerfile
+    image: buyerzone-catalog:local
     restart: unless-stopped
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000
     env_file: .env
@@ -54,7 +57,7 @@ services:
       retries: 3
 
   worker:
-    image: ${IMAGE_FULL}:${IMAGE_TAG:-latest}
+    image: buyerzone-catalog:local
     restart: unless-stopped
     command: python -m arq app.workers.arq_worker.WorkerSettings
     env_file: .env
@@ -67,7 +70,7 @@ services:
         condition: service_started
 
   ingestion:
-    image: ${IMAGE_FULL}:${IMAGE_TAG:-latest}
+    image: buyerzone-catalog:local
     restart: unless-stopped
     command: python -m app.services.ingestion
     env_file: .env
