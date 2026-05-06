@@ -37,7 +37,8 @@ class Settings(BaseSettings):
     s3_access_key_id: str
     s3_secret_access_key: str
     s3_bucket_name: str
-    api_base_url: str = ""  # e.g. https://api.yourdomain.com (no trailing slash); required at runtime
+    # e.g. https://api.yourdomain.com (no trailing slash); required at runtime
+    api_base_url: str = ""
     s3_endpoint_url: str  # e.g. https://<account_id>.r2.cloudflarestorage.com
     s3_region: str = "auto"
 
