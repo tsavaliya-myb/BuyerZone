@@ -25,10 +25,6 @@ from app.schemas.admin import (
     WholesalerResponse,
     WholesalerUpdate,
 )
-from app.services.chat_resolver import (
-    add_to_whitelist,
-    remove_from_whitelist,
-)
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 pwd_context = CryptContext(schemes=["sha256_crypt"])
@@ -94,7 +90,6 @@ async def add_chat(
         db.add(chat)
 
     await db.flush()
-    await add_to_whitelist(match["chat_id"], match["chat_name"])
     await db.commit()
     await db.refresh(chat)
     return MonitoredChatResponse.model_validate(chat)
@@ -111,7 +106,6 @@ async def remove_chat(
     if not chat:
         raise HTTPException(status_code=404, detail="Chat not found")
     chat.is_active = False
-    await remove_from_whitelist(chat.chat_id)
     await db.commit()
 
 

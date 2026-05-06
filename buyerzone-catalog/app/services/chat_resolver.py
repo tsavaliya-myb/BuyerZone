@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import time
 from typing import TYPE_CHECKING
 
 import structlog
@@ -12,27 +14,28 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger(__name__)
 
-# In-memory whitelist: chat_id -> chat_name (refreshed from DB on startup + after admin changes)
+# In-memory whitelist: chat_id -> chat_name (auto-refreshed from DB every TTL seconds)
 _whitelist: dict[int, str] = {}
 _lock = asyncio.Lock()
+_last_refreshed: float = 0.0
+WHITELIST_TTL = 60.0  # seconds
 
 
 def is_whitelisted(chat_id: int) -> bool:
+    global _last_refreshed
+    if time.monotonic() - _last_refreshed > WHITELIST_TTL:
+        _last_refreshed = time.monotonic()  # prevent task storm before reload finishes
+        with contextlib.suppress(RuntimeError):
+            asyncio.get_event_loop().create_task(_refresh_whitelist())
     return chat_id in _whitelist
+
+
+async def _refresh_whitelist() -> None:
+    await load_whitelist_from_db()
 
 
 def get_whitelist() -> dict[int, str]:
     return dict(_whitelist)
-
-
-async def add_to_whitelist(chat_id: int, chat_name: str) -> None:
-    async with _lock:
-        _whitelist[chat_id] = chat_name
-
-
-async def remove_from_whitelist(chat_id: int) -> None:
-    async with _lock:
-        _whitelist.pop(chat_id, None)
 
 
 async def load_whitelist_from_db() -> None:

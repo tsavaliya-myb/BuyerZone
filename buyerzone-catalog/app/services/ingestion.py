@@ -50,7 +50,6 @@ MAX_CONCURRENT_DOWNLOADS = 20
 _download_sem = asyncio.Semaphore(MAX_CONCURRENT_DOWNLOADS)
 
 # Startup catch-up: replay messages the listener missed while it was down.
-CATCH_UP_LIMIT = 100  # max history depth scanned per chat
 CATCH_UP_FIRST_RUN_HOURS = 24  # on first-ever run with no prior logs
 
 pyrogram_client = Client(
@@ -327,7 +326,7 @@ async def _catch_up_chat(client: Client, chat_id: int, chat_title: str) -> int:
 
     # get_chat_history returns newest-first; stop once we cross the threshold.
     missed = []
-    async for message in client.get_chat_history(chat_id, limit=CATCH_UP_LIMIT):
+    async for message in client.get_chat_history(chat_id):
         if last_msg_id is not None and message.id <= last_msg_id:
             break
         if cutoff_dt is not None and message.date:
