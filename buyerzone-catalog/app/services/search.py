@@ -9,7 +9,7 @@ import structlog
 from qdrant_client.models import FieldCondition, Filter, MatchValue
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import joinedload
+from sqlalchemy.orm import selectinload
 
 from app.config import get_settings
 from app.core.qdrant import get_qdrant_client
@@ -42,7 +42,7 @@ async def search_by_text(query: str, top_k: int, db: AsyncSession) -> SearchResp
     t0 = time.perf_counter()
     result = await db.execute(
         select(Product)
-        .options(joinedload(Product.wholesaler), joinedload(Product.chat))
+        .options(selectinload(Product.wholesaler), selectinload(Product.chat))
         .where(
             Product.status == "active",
             Product.name.ilike(f"%{query}%"),
@@ -116,7 +116,7 @@ async def search_combined(
 
     result = await db.execute(
         select(Product)
-        .options(joinedload(Product.wholesaler), joinedload(Product.chat))
+        .options(selectinload(Product.wholesaler), selectinload(Product.chat))
         .where(Product.id.in_([uuid.UUID(pid) for pid in product_ids_str if pid]))
     )
     products_map = {str(p.id): p for p in result.scalars().all()}
@@ -154,7 +154,7 @@ async def _enrich(qdrant_results, db: AsyncSession) -> list[SearchResultItem]:
 
     result = await db.execute(
         select(Product)
-        .options(joinedload(Product.wholesaler), joinedload(Product.chat))
+        .options(selectinload(Product.wholesaler), selectinload(Product.chat))
         .where(Product.id.in_(product_ids))
     )
     products = {str(p.id): p for p in result.scalars().all()}

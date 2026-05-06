@@ -63,8 +63,11 @@ def create_app() -> FastAPI:
     # ── Routers ───────────────────────────────────────────────────────────────
     from app.api.v1.admin import router as admin_router
     from app.api.v1.internal import router as internal_router
+    from app.api.v1.media import router as media_router
     from app.api.v1.products import router as products_router
     from app.api.v1.search import router as search_router
+
+    app.include_router(media_router)  # public, no prefix, no auth
 
     prefix = "/api/v1"
     app.include_router(admin_router, prefix=prefix)

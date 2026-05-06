@@ -45,9 +45,9 @@ def upload_image(image_bytes: bytes, chat_id: int, msg_id: int) -> tuple[str, st
         log.error("s3_upload_failed", key=key, error=str(exc))
         raise StorageUploadError(f"S3 upload failed: {exc}") from exc
 
-    public_url = f"{settings.s3_public_url}/{key}"
+    proxy_url = f"{settings.api_base_url}/media/{key}"
     log.info("image_uploaded", key=key)
-    return public_url, key
+    return proxy_url, key
 
 
 def delete_image(key: str) -> None:

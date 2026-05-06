@@ -4,7 +4,7 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import joinedload
+from sqlalchemy.orm import selectinload
 
 from app.core.database import get_db
 from app.core.security import require_admin
@@ -28,7 +28,7 @@ async def list_products(
 ):
     q = (
         select(Product)
-        .options(joinedload(Product.wholesaler), joinedload(Product.chat))
+        .options(selectinload(Product.wholesaler), selectinload(Product.chat))
         .order_by(Product.received_at.desc())
     )
     if wholesaler_id:
@@ -76,7 +76,7 @@ async def get_product(
 ):
     result = await db.execute(
         select(Product)
-        .options(joinedload(Product.wholesaler), joinedload(Product.chat))
+        .options(selectinload(Product.wholesaler), selectinload(Product.chat))
         .where(Product.id == product_id)
     )
     product = result.scalar_one_or_none()
