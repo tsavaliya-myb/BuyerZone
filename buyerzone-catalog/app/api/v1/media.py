@@ -7,8 +7,8 @@ from botocore.exceptions import ClientError
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 
-from app.services.storage import _get_client
 from app.config import get_settings
+from app.services.storage import _get_client
 
 router = APIRouter(tags=["media"])
 settings = get_settings()
@@ -33,7 +33,7 @@ async def serve_media(prefix: str, rest: str):
         obj = await loop.run_in_executor(_executor, _fetch_object, key)
     except ClientError as exc:
         code = exc.response["Error"]["Code"]
-        raise HTTPException(status_code=404 if code in ("NoSuchKey", "404") else 502)
+        raise HTTPException(status_code=404 if code in ("NoSuchKey", "404") else 502) from None
 
     content_type = obj.get("ContentType", "image/jpeg")
 
