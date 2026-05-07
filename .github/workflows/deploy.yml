@@ -193,6 +193,9 @@ jobs:
             # Pull latest code
             git pull origin main
 
+            # Compose file lives in the buyerzone-catalog/ subdirectory
+            cd buyerzone-catalog
+
             # Build image locally on VPS (uses Docker layer cache — fast after first run)
             echo "🔨 Building image..."
             docker compose -f docker-compose.prod.yml build api
