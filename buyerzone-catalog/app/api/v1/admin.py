@@ -64,7 +64,7 @@ async def add_chat(
     db: AsyncSession = Depends(get_db),
     admin=Depends(require_admin),
 ):
-    from app.core.telegram import resolve_dialog_via_ingestion
+    from app.core.telegram import reload_whitelist_via_ingestion, resolve_dialog_via_ingestion
 
     match = await resolve_dialog_via_ingestion(body.chat_name)
     if not match:
@@ -92,6 +92,7 @@ async def add_chat(
     await db.flush()
     await db.commit()
     await db.refresh(chat)
+    await reload_whitelist_via_ingestion()
     return MonitoredChatResponse.model_validate(chat)
 
 
@@ -107,6 +108,9 @@ async def remove_chat(
         raise HTTPException(status_code=404, detail="Chat not found")
     chat.is_active = False
     await db.commit()
+    from app.core.telegram import reload_whitelist_via_ingestion
+
+    await reload_whitelist_via_ingestion()
 
 
 @router.get("/chats", response_model=list[MonitoredChatResponse])

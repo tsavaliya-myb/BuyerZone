@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
-import time
 from typing import TYPE_CHECKING
 
 import structlog
@@ -14,32 +12,38 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger(__name__)
 
-# In-memory whitelist: chat_id -> chat_name (auto-refreshed from DB every TTL seconds)
+# In-memory whitelist: chat_id -> chat_name. Hydrated at startup and refreshed
+# every WHITELIST_REFRESH_INTERVAL seconds by a background task so admin
+# add/remove operations propagate without restarting the ingestion service.
 _whitelist: dict[int, str] = {}
-_lock = asyncio.Lock()
-_last_refreshed: float = 0.0
-WHITELIST_TTL = 60.0  # seconds
+WHITELIST_REFRESH_INTERVAL = 600.0  # seconds (10 min) — safety net for the
+# push-based reload via the ingestion internal API. The push path handles the
+# common case; this poll catches transient HTTP failures.
 
 
 def is_whitelisted(chat_id: int) -> bool:
-    global _last_refreshed
-    if time.monotonic() - _last_refreshed > WHITELIST_TTL:
-        _last_refreshed = time.monotonic()  # prevent task storm before reload finishes
-        with contextlib.suppress(RuntimeError):
-            asyncio.get_event_loop().create_task(_refresh_whitelist())
     return chat_id in _whitelist
-
-
-async def _refresh_whitelist() -> None:
-    await load_whitelist_from_db()
 
 
 def get_whitelist() -> dict[int, str]:
     return dict(_whitelist)
 
 
+async def whitelist_refresher() -> None:
+    """Background loop — re-hydrates the whitelist from the DB on a fixed cadence.
+    Started once from the ingestion service entrypoint."""
+    while True:
+        await asyncio.sleep(WHITELIST_REFRESH_INTERVAL)
+        try:
+            await load_whitelist_from_db()
+        except Exception as exc:
+            log.error("whitelist_refresh_failed", error=str(exc))
+
+
 async def load_whitelist_from_db() -> None:
-    """Called on startup — hydrates in-memory whitelist from PostgreSQL."""
+    """Hydrates in-memory whitelist from PostgreSQL. Safe to call concurrently
+    with is_whitelisted() — the new dict is built outside the lock and swapped
+    in atomically so readers never see a partially-populated state."""
     from sqlalchemy import select
 
     from app.core.database import AsyncSessionLocal
@@ -51,10 +55,13 @@ async def load_whitelist_from_db() -> None:
         )
         chats = result.scalars().all()
 
-    async with _lock:
-        _whitelist.clear()
-        for chat in chats:
-            _whitelist[chat.chat_id] = chat.chat_name
+    new_whitelist = {chat.chat_id: chat.chat_name for chat in chats}
+
+    # Atomic reference swap — readers see either the old dict or the new dict,
+    # never a half-populated state. CPython guarantees module-attribute
+    # assignment is a single bytecode op.
+    global _whitelist
+    _whitelist = new_whitelist
 
     log.info("whitelist_loaded", count=len(_whitelist))
 

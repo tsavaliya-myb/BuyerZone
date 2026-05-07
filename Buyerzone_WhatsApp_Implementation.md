@@ -51,7 +51,7 @@ The result: a single unified product catalog searchable across both platforms wi
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
-│              WHATSAPP (Groups + Channels/Newsletters)                │
+│              WHATSAPP (Groups + Channels)                            │
 │          Wholesaler A    Wholesaler B    Wholesaler N                │
 └──────────────────────────────┬───────────────────────────────────────┘
                                │  WhatsApp Web Multi-Device (Baileys)

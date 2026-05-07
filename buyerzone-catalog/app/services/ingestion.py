@@ -29,18 +29,22 @@ from app.services.chat_resolver import (
     load_whitelist_from_db,
     resolve_dialog_by_exact_name,
     search_dialogs,
+    whitelist_refresher,
 )
 
 logging.basicConfig(level=logging.WARNING)
 logging.getLogger("pyrogram").setLevel(logging.WARNING)
 logging.getLogger("sqlalchemy").setLevel(logging.WARNING)
+logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
+logging.getLogger("sqlalchemy.engine.Engine").setLevel(logging.WARNING)
+logging.getLogger("sqlalchemy.pool").setLevel(logging.WARNING)
 
 log = structlog.get_logger(__name__)
 settings = get_settings()
 
 # Keywords that signal an out-of-stock message — skip these
 OUT_OF_STOCK_PATTERNS = re.compile(
-    r"(out\s+of\s+stock|stock\s+out|sold\s+out|not\s+available|unavailable|oos|stockout)",
+    r"\b(out\s+of\s+stock|stock\s+out|sold\s+out|not\s+available|unavailable|oos|stockout)\b",
     re.IGNORECASE,
 )
 
@@ -79,6 +83,12 @@ async def dialog_resolve(name: str):
 @internal_app.get("/health")
 async def health():
     return {"status": "ok", "connected": pyrogram_client.is_connected}
+
+
+@internal_app.post("/whitelist/reload")
+async def whitelist_reload():
+    await load_whitelist_from_db()
+    return {"status": "ok", "count": len(get_whitelist())}
 
 
 # ── Pyrogram listener ──────────────────────────────────────────────────────────
@@ -400,6 +410,10 @@ async def main() -> None:
         # Replay messages missed while the listener was down. Runs in the
         # background so live updates start flowing immediately.
         asyncio.create_task(_catch_up_missed(pyrogram_client))
+
+        # Periodically re-hydrate the whitelist so admin add/remove operations
+        # propagate without a service restart.
+        asyncio.create_task(whitelist_refresher())
 
         log.info("ingestion_service_ready")
         try:

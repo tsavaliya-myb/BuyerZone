@@ -693,3 +693,8 @@ This module is intentionally scoped to ingestion and search. The data it produce
 ---
 
 *Buyerzone Catalog Intelligence System — Telegram Ingestion Module — v1.0 — Confidential*
+
+
+uvicorn app.main:app --reload --port 8000
+2	python -m arq app.workers.arq_worker.WorkerSettings
+3	python -m app.services.ingestion
