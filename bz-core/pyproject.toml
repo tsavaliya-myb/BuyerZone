@@ -1,5 +1,5 @@
 [tool.poetry]
-name = "buyerzone-catalog"
+name = "bz-core"
 version = "1.0.0"
 description = "BuyerZone Catalog Intelligence System — Telegram Ingestion Module"
 authors = ["ReleaseV Team"]

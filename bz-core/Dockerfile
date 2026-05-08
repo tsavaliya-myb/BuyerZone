@@ -29,14 +29,18 @@ WORKDIR /app
 COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
 COPY --from=builder /usr/local/bin /usr/local/bin
 
+# Pre-bake CLIP weights so worker cold-starts are instant (~350 MB, cached layer)
+# Must run before COPY . . so source changes don't bust this layer
+ENV HF_HOME=/app/.cache
+ENV TORCH_HOME=/app/.cache
+RUN mkdir -p /app/.cache \
+    && python -c "import open_clip; open_clip.create_model_and_transforms('ViT-B-32-quickgelu', pretrained='openai')"
+
 # Copy application source
 COPY . .
 
-# Ensure sessions + model cache dirs exist and are owned by app user
-RUN mkdir -p /app/sessions /app/.cache && chown -R app:app /app
-
-ENV HF_HOME=/app/.cache
-ENV TORCH_HOME=/app/.cache
+# Ensure sessions dir exists and everything is owned by app user
+RUN mkdir -p /app/sessions && chown -R app:app /app
 
 USER app
 

@@ -6,7 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **BuyerZone** is a B2B Catalog Intelligence System — a Telegram Ingestion Module for a dropshipping intermediary platform. It ingests product listings from Telegram wholesaler groups, generates CLIP embeddings for visual similarity search, and exposes REST APIs for downstream modules (dashboard, order management, client catalog).
 
-The full implementation spec is at [Buyerzone_Telegram_Implementation.md](Buyerzone_Telegram_Implementation.md).
+The full implementation spec is at [docs/Buyerzone_Telegram_Implementation.md](docs/Buyerzone_Telegram_Implementation.md).
+WhatsApp ingestion spec is at [docs/Buyerzone_WhatsApp_Implementation.md](docs/Buyerzone_WhatsApp_Implementation.md).
 
 ## Tech Stack
 
@@ -18,7 +19,8 @@ The full implementation spec is at [Buyerzone_Telegram_Implementation.md](Buyerz
 - **ORM/Migrations:** SQLAlchemy 2.0 + Alembic
 - **Validation:** Pydantic v2
 - **Storage:** Cloudflare R2 (S3-compatible image storage)
-- **Infra:** Docker Compose on Hetzner VPS
+- **WhatsApp:** Baileys (Node.js WA Web client)
+- **Infra:** Docker Compose on Hostinger VPS (single box — all services)
 
 ## Commands
 
@@ -64,49 +66,60 @@ FastAPI REST API (app/api/v1/)
 Downstream modules
 ```
 
-### Project Structure
+### Repo Structure
 
 ```
-buyerzone-catalog/
-├── app/
-│   ├── main.py                  # FastAPI app factory, lifespan, router registration
-│   ├── config.py                # Pydantic Settings — env vars, secrets
-│   ├── api/v1/
-│   │   ├── admin.py             # /admin/* routes
-│   │   ├── search.py            # /search/* routes
-│   │   ├── products.py          # /products/* routes
-│   │   └── internal.py          # /internal/* routes
-│   ├── services/
-│   │   ├── ingestion.py         # Pyrogram listener + message parsing
-│   │   ├── processing.py        # CLIP embedding + pipeline orchestration
-│   │   ├── search.py            # Qdrant search + result enrichment
-│   │   ├── storage.py           # R2 upload/download abstraction
-│   │   ├── chat_resolver.py     # Pyrogram dialog search + whitelist mgmt
-│   │   └── staleness.py         # Cron job — mark old products stale
-│   ├── models/                  # SQLAlchemy ORM: product, wholesaler, monitored_chat, ingestion_log
-│   ├── schemas/                 # Pydantic request/response schemas
-│   ├── core/
-│   │   ├── database.py          # SQLAlchemy async engine + session
-│   │   ├── qdrant.py            # Qdrant client + collection setup
-│   │   ├── redis.py             # Redis client + ARQ queue config
-│   │   ├── clip.py              # CLIP model loader (singleton)
-│   │   ├── security.py          # JWT auth
-│   │   └── exceptions.py        # Custom exception classes
-│   └── workers/
-│       ├── arq_worker.py        # ARQ worker entrypoint + job definitions
-│       └── tasks/
-│           ├── process_message.py   # Main processing pipeline task
-│           └── staleness_check.py   # Periodic staleness cron task
-├── alembic/versions/            # Database migrations
-├── sessions/                    # Pyrogram session files (gitignored)
-├── tests/
-│   ├── unit/
-│   ├── integration/
-│   └── conftest.py
-├── docker-compose.yml
-├── Dockerfile
-├── .env.example
-└── pyproject.toml
+BuyerZone/                           # git root
+├── bz-core/                         # Python: FastAPI + ARQ worker + Telegram listener
+│   ├── app/
+│   │   ├── main.py                  # FastAPI app factory, lifespan, router registration
+│   │   ├── config.py                # Pydantic Settings — env vars, secrets
+│   │   ├── api/v1/
+│   │   │   ├── admin.py             # /admin/* routes
+│   │   │   ├── search.py            # /search/* routes
+│   │   │   ├── products.py          # /products/* routes
+│   │   │   └── internal.py          # /internal/* routes
+│   │   ├── services/
+│   │   │   ├── ingestion.py         # Pyrogram listener + message parsing
+│   │   │   ├── processing.py        # CLIP embedding + pipeline orchestration
+│   │   │   ├── search.py            # Qdrant search + result enrichment
+│   │   │   ├── storage.py           # R2 upload/download abstraction
+│   │   │   ├── chat_resolver.py     # Pyrogram dialog search + whitelist mgmt
+│   │   │   └── staleness.py         # Cron job — mark old products stale
+│   │   ├── models/                  # SQLAlchemy ORM: product, wholesaler, monitored_chat, ingestion_log
+│   │   ├── schemas/                 # Pydantic request/response schemas
+│   │   ├── core/
+│   │   │   ├── database.py          # SQLAlchemy async engine + session
+│   │   │   ├── qdrant.py            # Qdrant client + collection setup
+│   │   │   ├── redis.py             # Redis client + ARQ queue config
+│   │   │   ├── clip.py              # CLIP model loader (singleton)
+│   │   │   ├── security.py          # JWT auth
+│   │   │   └── exceptions.py        # Custom exception classes
+│   │   └── workers/
+│   │       ├── arq_worker.py        # ARQ worker entrypoint + job definitions
+│   │       └── tasks/
+│   │           ├── process_message.py   # Main processing pipeline task
+│   │           └── staleness_check.py   # Periodic staleness cron task
+│   ├── alembic/versions/            # Database migrations
+│   ├── sessions/                    # Pyrogram session files (gitignored)
+│   ├── tests/
+│   ├── Dockerfile
+│   ├── .env.example
+│   └── pyproject.toml
+├── wa-listener/                     # Node.js: Baileys WhatsApp listener (pending)
+├── admin-ui/                        # React/Vite admin dashboard (pending)
+├── infra/
+│   ├── docker-compose.yml           # Dev — all services
+│   └── docker-compose.prod.yml      # Prod — localhost-bound DBs, Nginx proxy
+├── packages/
+│   └── message-payload.schema.json  # Shared ARQ queue contract (Telegram + WhatsApp)
+├── docs/
+│   ├── Buyerzone_Telegram_Implementation.md
+│   └── Buyerzone_WhatsApp_Implementation.md
+└── .github/workflows/
+    ├── deploy.yml                   # bz-core CI/CD
+    ├── wa-listener.yml              # wa-listener CI/CD (pending)
+    └── admin-ui.yml                 # admin-ui CI/CD (pending)
 ```
 
 ### Dual Storage Pattern

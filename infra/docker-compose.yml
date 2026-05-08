@@ -1,9 +1,11 @@
 services:
 
   api:
-    build: .
+    build:
+      context: ../bz-core
+      dockerfile: Dockerfile
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2
-    env_file: .env
+    env_file: ../bz-core/.env
     ports:
       - "8000:8000"
     depends_on:
@@ -14,13 +16,15 @@ services:
       qdrant:
         condition: service_started
     volumes:
-      - ./sessions:/app/sessions
+      - ../bz-core/sessions:/app/sessions
     restart: unless-stopped
 
   worker:
-    build: .
+    build:
+      context: ../bz-core
+      dockerfile: Dockerfile
     command: python -m arq app.workers.arq_worker.WorkerSettings
-    env_file: .env
+    env_file: ../bz-core/.env
     depends_on:
       postgres:
         condition: service_healthy
@@ -29,20 +33,22 @@ services:
       qdrant:
         condition: service_started
     volumes:
-      - ./sessions:/app/sessions
+      - ../bz-core/sessions:/app/sessions
     restart: unless-stopped
 
   ingestion:
-    build: .
+    build:
+      context: ../bz-core
+      dockerfile: Dockerfile
     command: python -m app.services.ingestion
-    env_file: .env
+    env_file: ../bz-core/.env
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
     volumes:
-      - ./sessions:/app/sessions
+      - ../bz-core/sessions:/app/sessions
     restart: always
 
   postgres:

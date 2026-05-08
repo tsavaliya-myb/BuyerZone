@@ -382,7 +382,7 @@ All endpoints are prefixed with `/api/v1`. use JWT Bearer tokens.
 ## 7. Project Structure
 
 ```
-buyerzone-catalog/
+bz-core/
 ├── app/
 │   ├── main.py                  # FastAPI app factory, lifespan, router registration
 │   ├── config.py                # Pydantic Settings — env vars, secrets

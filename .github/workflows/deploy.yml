@@ -4,18 +4,18 @@ on:
   push:
     branches: [main]
     paths:
-      - 'buyerzone-catalog/**'
+      - 'bz-core/**'
       - '.github/workflows/deploy.yml'
-      - 'docker-compose.prod.yml'
+      - 'infra/docker-compose.prod.yml'
   pull_request:
     branches: [main]
     paths:
-      - 'buyerzone-catalog/**'
+      - 'bz-core/**'
   workflow_dispatch:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository_owner }}/buyerzone-catalog
+  IMAGE_NAME: ${{ github.repository_owner }}/bz-core
 
 jobs:
   # ───────────────────────────────────────────────────────────────────
@@ -26,7 +26,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: buyerzone-catalog
+        working-directory: bz-core
 
     services:
       postgres:
@@ -69,7 +69,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/pypoetry
-          key: poetry-${{ hashFiles('buyerzone-catalog/poetry.lock') }}
+          key: poetry-${{ hashFiles('bz-core/poetry.lock') }}
           restore-keys: poetry-
 
       - name: Install dependencies
@@ -112,7 +112,7 @@ jobs:
       #   uses: codecov/codecov-action@v4
       #   if: always()
       #   with:
-      #     file: buyerzone-catalog/coverage.xml
+      #     file: bz-core/coverage.xml
       #     fail_ci_if_error: false
 
   # ───────────────────────────────────────────────────────────────────
@@ -159,23 +159,22 @@ jobs:
       - name: Build and push image
         uses: docker/build-push-action@v5
         with:
-          context: ./buyerzone-catalog
+          context: ./bz-core
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          # GitHub Actions cache — speeds up subsequent builds
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
   # ───────────────────────────────────────────────────────────────────
-  # JOB 3: Deploy to Hostinger VPS
+  # JOB 3: Deploy to VPS
   # ───────────────────────────────────────────────────────────────────
   deploy:
-    name: Deploy to Hostinger VPS
+    name: Deploy to VPS
     runs-on: ubuntu-latest
     needs: test
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    environment: production   # Requires manual approval gate if configured
+    environment: production
 
     steps:
       - name: Deploy via SSH
@@ -193,33 +192,33 @@ jobs:
             # Pull latest code
             git pull origin main
 
-            # Compose file lives in the buyerzone-catalog/ subdirectory
-            cd buyerzone-catalog
+            # Compose files now live in infra/
+            cd infra
 
-            # Build image locally on VPS (uses Docker layer cache — fast after first run)
-            echo "🔨 Building image..."
+            # Build image locally on VPS
+            echo "Building image..."
             docker compose -f docker-compose.prod.yml build api
 
             # Run database migrations
-            echo "📦 Running Alembic migrations..."
+            echo "Running Alembic migrations..."
             docker compose -f docker-compose.prod.yml run --rm api alembic upgrade head
 
             # Rolling restart
-            echo "♻️  Restarting api, worker, ingestion..."
+            echo "Restarting api, worker, ingestion..."
             docker compose -f docker-compose.prod.yml up -d \
               --no-deps --remove-orphans \
               api worker ingestion
 
             # Health check with retry
-            echo "⏳ Waiting for API to become healthy..."
+            echo "Waiting for API to become healthy..."
             for i in 1 2 3 4 5; do
               sleep 6
               if curl -sf http://localhost:8000/health > /dev/null; then
-                echo "✅ Health check passed on attempt $i"
+                echo "Health check passed on attempt $i"
                 break
               fi
               if [ $i -eq 5 ]; then
-                echo "❌ Health check failed — rolling back"
+                echo "Health check failed — rolling back"
                 git stash
                 docker compose -f docker-compose.prod.yml build api
                 docker compose -f docker-compose.prod.yml up -d --no-deps api worker ingestion
@@ -228,7 +227,5 @@ jobs:
               echo "  Retry $i/5..."
             done
 
-            # Clean up dangling images
             docker image prune -f || true
-
-            echo "🎉 Deployment complete"
+            echo "Deployment complete"

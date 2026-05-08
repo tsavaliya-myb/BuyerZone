@@ -2,11 +2,11 @@ services:
 
   api:
     build:
-      context: .
+      context: ../bz-core
       dockerfile: Dockerfile
-    image: buyerzone-catalog:local
+    image: bz-core:local
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
-    env_file: .env
+    env_file: ../bz-core/.env
     ports:
       - "127.0.0.1:8000:8000"   # Only exposed to localhost — Nginx proxies externally
     depends_on:
@@ -17,7 +17,7 @@ services:
       qdrant:
         condition: service_started
     volumes:
-      - ./sessions:/app/sessions
+      - ../bz-core/sessions:/app/sessions
     restart: unless-stopped
     logging:
       driver: "json-file"
@@ -26,9 +26,9 @@ services:
         max-file: "3"
 
   worker:
-    image: buyerzone-catalog:local
+    image: bz-core:local
     command: python -m arq app.workers.arq_worker.WorkerSettings
-    env_file: .env
+    env_file: ../bz-core/.env
     depends_on:
       postgres:
         condition: service_healthy
@@ -37,7 +37,7 @@ services:
       qdrant:
         condition: service_started
     volumes:
-      - ./sessions:/app/sessions
+      - ../bz-core/sessions:/app/sessions
     restart: unless-stopped
     logging:
       driver: "json-file"
@@ -46,16 +46,16 @@ services:
         max-file: "3"
 
   ingestion:
-    image: buyerzone-catalog:local
+    image: bz-core:local
     command: python -m app.services.ingestion
-    env_file: .env
+    env_file: ../bz-core/.env
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
     volumes:
-      - ./sessions:/app/sessions
+      - ../bz-core/sessions:/app/sessions
     restart: always
     logging:
       driver: "json-file"

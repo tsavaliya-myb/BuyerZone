@@ -57,7 +57,7 @@ The result: a single unified product catalog searchable across both platforms wi
                                │  WhatsApp Web Multi-Device (Baileys)
 ┌──────────────────────────────▼───────────────────────────────────────┐
 │           WA LISTENER SERVICE  (Node.js / Baileys)                   │
-│   QR Auth → Whitelist Filter → Media Download → Payload Builder      │
+│  Pairing-Code Auth → Whitelist Filter → Media Download → Payload     │
 └──────────────────────────────┬───────────────────────────────────────┘
                                │  Redis RPUSH  (same queue as Telegram)
 ┌──────────────────────────────▼───────────────────────────────────────┐
@@ -172,7 +172,7 @@ The `products.source_platform` column (`DEFAULT 'telegram'`) already handles mul
 
 #### ingestion_logs — No Changes Required
 
-The existing `ingestion_logs` table captures `chat_id`, `telegram_msg_id` (reuse for WhatsApp message ID), `status`, and `product_id`. The column name `telegram_msg_id` is a minor naming inconsistency — tolerable, or rename via migration:
+The existing `ingestion_logs` table captures `chat_id`, `telegram_msg_id` (reuse for WhatsApp message ID), `status`, and `product_id`. The column name `telegram_msg_id` is a minor naming inconsistency — rename via migration:
 
 ```sql
 ALTER TABLE ingestion_logs RENAME COLUMN telegram_msg_id TO message_id;
@@ -180,22 +180,27 @@ ALTER TABLE ingestion_logs RENAME COLUMN telegram_msg_id TO message_id;
 ALTER TABLE products RENAME COLUMN telegram_msg_id TO message_id;
 ```
 
-> **Decision pending:** Rename or tolerate. See Section 13.
+### 4.2 WA Auth State — Stored in platform_sessions (Same as Telegram)
 
-### 4.2 New Table: wa_auth_sessions (Optional Persistence)
+No separate table. Baileys auth state is stored in the existing `platform_sessions` table with `platform = 'whatsapp'`. This is identical in pattern to how Telegram session strings are stored in `telegram_auth.py`.
 
-Baileys auth state can be stored on disk (default) or in PostgreSQL for easier backup and multi-instance scenarios.
+| Column | Telegram value | WhatsApp value |
+|---|---|---|
+| `platform` | `'telegram'` | `'whatsapp'` |
+| `phone_number` | linked phone | linked phone |
+| `session_data` | Pyrogram session string | Baileys full auth state serialised as JSONB |
+| `display_name` | Telegram display name | WhatsApp profile name |
+| `status` | `active` / `revoked` | `active` / `revoked` |
+| `created_by` | admin user UUID | admin user UUID |
 
-```sql
-CREATE TABLE wa_auth_sessions (
-  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  session_key VARCHAR(500) NOT NULL UNIQUE,   -- Baileys internal key
-  session_data JSONB NOT NULL,                -- Serialised auth state
-  updated_at  TIMESTAMPTZ DEFAULT NOW()
-);
-```
+**Auth state lifecycle:**
 
-> This table is optional. The default approach (disk-based auth) is simpler and recommended for single-instance deployments. See Section 5.1.
+- On `wa_listener` startup: FastAPI reads the active `platform_sessions` row (`platform='whatsapp'`, `status='active'`), calls `/wa-internal/load-session { authState }`, and Baileys initialises with it — no disk read.
+- When Baileys fires `creds.update`: the listener serialises the full auth state and calls `POST /wa-internal/auth-state/save` on itself (stored in-memory); FastAPI periodically flushes this to `platform_sessions` **or** the listener notifies FastAPI via `POST /internal/wa/session-update { authState }` immediately on every `creds.update`.
+- On `DELETE /admin/telegram/auth` (revoke): same `platform_sessions` row is marked `status='revoked'` and the listener is reloaded — identical to the Telegram revoke flow.
+- No disk volume needed for auth state. `wa_sessions/` directory is **removed** from the docker-compose volume mounts.
+
+
 
 ### 4.3 MessagePayload — Shared Queue Contract
 
@@ -221,58 +226,80 @@ The Node.js listener and the Python workers communicate via this JSON payload pu
 
 ## 5. Detailed System Flow
 
-### 5.1 Authentication Flow (One-Time Setup)
+### 5.1 Authentication Flow (Admin UI Driven)
 
-Baileys uses the **WhatsApp Web multi-device protocol**. Authentication generates a set of cryptographic keys stored as auth state via `useMultiFileAuthState(<dir>)`. This is a one-time operation.
-
-**Primary path: Pairing Code (chosen for headless VPS)**
-
-The reference implementation skips QR entirely on first run and uses an 8-digit pairing code. This is operationally simpler in Docker — no QR image to ferry from container stdout to a phone.
+Baileys auth state is stored in `platform_sessions` (DB) — no disk files, no env-var phone numbers. The entire flow is initiated from the Admin UI by an authenticated admin, identical in structure to Telegram's UI-driven OTP flow in `telegram_auth.py`.
 
 ```
-Step 1: First-run startup
-        → useMultiFileAuthState('/app/wa_sessions/auth_pairing') loads empty state
-        → fetchLatestBaileysVersion() → negotiate current WA Web protocol version
-        → makeWASocket({ version, auth: state, browser: Browsers.ubuntu('Chrome'),
-                          logger: pino({ level: 'silent' }), printQRInTerminal: false })
-        → Wait ~3s for the initial socket handshake to complete
-        → If !sock.authState.creds.registered:
-            phone = WA_PHONE_NUMBER env (digits only, country code + national number,
-                    no '+', no spaces, no leading zero, e.g. "919876543210")
-            code  = await sock.requestPairingCode(phone)
-            → Format as "ABCD-EFGH" and surface via:
-                a) Container logs (operator runbook), AND
-                b) GET /wa-internal/pair-code (consumed by Admin UI)
-            → Code expires in ~60 seconds; restarting requests a fresh one
+STARTUP (every container boot)
+────────────────────────────────────────────────────────────
+FastAPI lifespan:
+  → SELECT platform_sessions WHERE platform='whatsapp' AND status='active'
+  → If found:
+      POST /wa-internal/load-session { authState: <JSONB from session_data> }
+      → Baileys initialises with stored creds, connects immediately
+      → Listener state: 'connected'
+  → If not found:
+      POST /wa-internal/load-session { authState: null }
+      → Baileys starts with empty state, waits for pairing
+      → Listener state: 'awaiting_pair_code'
 
-Step 2: Operator enters the code in WhatsApp mobile
-        WhatsApp → Settings → Linked Devices → Link a device
-                 → "Link with phone number instead" (small text at bottom)
-                 → Enter the 8-digit code
+FIRST-TIME PAIRING (Admin UI)
+────────────────────────────────────────────────────────────
+Admin: opens Admin → WhatsApp → status shows "Not paired"
+       enters phone number (digits only, e.g. 919876543210) → clicks Pair
 
-Step 3: creds.update event fires
-        → saveCreds() persists to /app/wa_sessions/auth_pairing/
-        → connection.update emits { connection: 'open' }
-        → Channel resolution + listener begin (see 5.5)
+  POST /api/v1/admin/whatsapp/auth/send-code { phone }   ← JWT Admin
+    → normalise + validate phone (7–15 digits, no '+')
+    → POST /wa-internal/pair { phone }
+        → fetchLatestBaileysVersion() + makeWASocket(...)
+        → Wait ~3s for socket handshake
+        → sock.requestPairingCode(phone)
+        → Listener state: 'pair_pending'
+        → Returns { login_id, code: "ABCD-EFGH", expires_in: 60 }
+    → Returns { login_id, code, expires_in } to Admin UI
 
-Step 4: All subsequent restarts
-        → Auth state loaded from disk → connects with no operator action
+Admin: UI shows "ABCD-EFGH" with 60s countdown
+       Operator opens WhatsApp on linked phone:
+         Settings → Linked Devices → Link a device
+                  → "Link with phone number instead"
+                  → Enters code
 
-Session is revoked if:
-  - The linked device is removed from WhatsApp mobile
-  - The phone is inactive for 14+ days (WhatsApp policy)
-  - The number is banned
-  - WhatsApp returns close code 405 (Policy Violation) — auth folder must be deleted
-    and a fresh pairing code requested. See 5.6.
+  Baileys fires creds.update:
+    → Listener serialises full auth state as JSONB
+    → POST /internal/wa/session-update { authState, phone, display_name }
+        (Node → FastAPI — only outbound call Node ever makes)
+        → UPSERT platform_sessions (platform='whatsapp', status='active',
+                                    session_data=<authState JSONB>,
+                                    phone_number=phone, display_name=display_name)
+    → Subsequent creds.update events (key rotation) repeat this upsert
+
+  Baileys fires connection.update { connection: 'open' }:
+    → Listener state: 'connected'
+    → Whitelist loaded from monitored_chats
+    → Ingestion begins
+
+SUBSEQUENT RESTARTS
+────────────────────────────────────────────────────────────
+  → Lifespan loads auth state from DB → Baileys connects, no operator action
+
+RE-PAIRING (after 401 loggedOut or 405 Policy Violation)
+────────────────────────────────────────────────────────────
+  → Listener auto-transitions to 'requires_repair', stops ingesting
+  → Admin UI shows "Re-pair required" banner
+
+  DELETE /api/v1/admin/whatsapp/auth   ← JWT Admin
+    → UPDATE platform_sessions SET status='revoked'
+    → POST /wa-internal/reset  (clears in-memory creds, reinitialises empty socket)
+    → Listener state: 'awaiting_pair_code'
+  → Admin repeats pairing flow above
 ```
 
-**Fallback: QR Code**
-
-QR is supported via `printQRInTerminal: true` (or rendering the QR string from `connection.update`'s `qr` field to a PNG and exposing it at `/wa-internal/qr`). Use only if pairing code is unavailable for the target number.
+> **Pairing code is the only supported auth path.** `printQRInTerminal` stays `false`, the `qr` field from `connection.update` is ignored, and there is no `/qr` endpoint anywhere in the system.
 
 ### 5.2 Admin — Adding Monitored Chats
 
-The flow mirrors the Telegram admin UX (search-then-add) but accepts **either a name fragment or an invite link** in a single resolve endpoint. The bot **never auto-joins**: the operator joins the chat from the linked WhatsApp account first, and the bot's job is only to resolve-and-validate-and-add.
+The flow mirrors the Telegram admin UX (search-then-add) but accepts **either a name fragment or an invite code** in a single resolve endpoint. The bot **never auto-joins**: the operator joins the chat from the linked WhatsApp account first, and the bot's job is only to resolve-and-validate-and-add.
 
 This design protects the account from WhatsApp's automation heuristics (rapid programmatic joins are a common ban trigger) and keeps a clean separation: human owns membership, bot owns monitoring.
 
@@ -365,7 +392,7 @@ Body: { "jid": "<resolved jid>", "chat_name": "<optional override>" }
   → INSERT into monitored_chats (
         platform='whatsapp',
         chat_id=<jid>,
-        chat_type='wa_group' | 'wa_channel',
+        chat_type='wa_group' | 'wa_channel' | 'wa_community',
         chat_name=<resolved or overridden name>
     )
   → Notify WA Listener: POST /wa-internal/whitelist/reload
@@ -399,6 +426,8 @@ chat on the linked phone yet. Do step 1, then retry.
 ```
 
 ### 5.3 Ingestion Flow (Real-Time, 24/7)
+
+if message have multiple images then we only need first image only.
 
 ```
 Event: New batch arrives via sock.ev.on('messages.upsert', { messages, type })
@@ -435,7 +464,6 @@ FILTER 4: Does the unwrapped content carry an imageMessage?
           Look at:
             content.imageMessage
             content.extendedTextMessage?.contextInfo?.quotedMessage?.imageMessage
-          NO  → discard (text-only, stickers, documents, etc.)
           YES → continue
                 │
                 ▼
@@ -488,19 +516,10 @@ ENQUEUE:  ioredis.rpush('arq:queue:process_message', JSON.stringify(payload))
 
 ### 5.4 Processing Pipeline (Existing Python Workers — No Changes)
 
-The ARQ worker's `process_message` task already handles both platforms via `source_platform` field. The only difference is how the image arrives:
+The ARQ worker's `process_message` task already handles both platforms via `source_platform` field. 
 
-- **Telegram path:** image arrives as Telegram `file_id` → downloaded in Python via Pyrogram
+- **Telegram path:** image arrives pre-downloaded as base64 in payload → decoded in Python
 - **WhatsApp path:** image arrives pre-downloaded as base64 in payload → decoded in Python
-
-To support this, `process_message.py` needs a small branch at the download step:
-
-```python
-if payload.source_platform == "telegram":
-    image_bytes = await download_telegram_image(payload.file_id)
-elif payload.source_platform == "whatsapp":
-    image_bytes = base64.b64decode(payload.image_data_b64)
-```
 
 Everything downstream (validation, R2 upload, CLIP, dedup, PostgreSQL+Qdrant write) is **identical**.
 
@@ -550,13 +569,17 @@ WhatsApp Channels (called "Newsletters" in Baileys) behave differently from grou
 | Message event | `messages.upsert` | `messages.upsert` (same event) |
 | Join mechanism | Invite link | Subscribe button |
 
-**Channel name resolution + caching (validated pattern):**
+**Channel name resolution — resolved once at add-time, stored in DB:**
 
-1. On `connection.update` → `'open'`, iterate the configured channel invite links from `monitored_chats` (platform=whatsapp, chat_type=wa_channel). For each, extract `<code>` from the URL and call `newsletterMetadata("invite", code)`. Cache `{ jid → name }` in an in-memory `Map`. The name lives at `meta.thread_metadata?.name?.text || meta.threadMetadata?.name?.text || meta.name || meta.subject`.
-2. On `messages.upsert` for an `@newsletter` JID not yet in cache, call `newsletterMetadata("jid", jid)` once with an 8-second timeout (the API can hang). Cache the result — including a `null` name on failure — to avoid retry storms. Then fire-and-forget `newsletterSubscribeLiveUpdates(jid)` so subsequent updates flow.
-3. Group names are resolved on demand via `sock.groupMetadata(jid).subject`; failures fall back to the JID prefix.
+No in-memory caching of JID → name mappings. Names are resolved during the admin `chats/resolve` + `chats/add` flow and persisted to `monitored_chats.chat_name`. The listener never needs to look up a name at runtime.
 
-The listener handles both group and channel JIDs transparently — the same `messages.upsert` handler fires for both. The `chat_type` in `monitored_chats` is set to `wa_group` or `wa_channel` for admin visibility, but the ingestion logic is identical aside from the resolution + subscription steps above.
+- `POST /admin/whatsapp/chats/resolve` calls `/wa-internal/resolve-link` → Baileys resolves the invite link and returns `{ jid, name, type }`. Name is shown in the admin UI for confirmation.
+- `POST /admin/whatsapp/chats/add` inserts the row with `chat_name = <resolved name>`. This is the permanent record.
+- During ingestion, `chat_name` in the `MessagePayload` is sourced from the in-memory whitelist Set which is loaded from `monitored_chats` on startup and on every `/wa-internal/whitelist/reload` call. No Baileys API call at message-receive time.
+
+After a channel is added, fire-and-forget `sock.newsletterSubscribeLiveUpdates(jid)` so message events start flowing. This is the only channel-specific runtime call.
+
+The listener handles both group and channel JIDs transparently — the same `messages.upsert` handler fires for both. The `chat_type` in `monitored_chats` is set to `wa_group` or `wa_channel` for admin visibility, but the ingestion logic is identical.
 
 > **Sender attribution for channels:** because channel posts are anonymous from the admin, `sender_id` falls back to the channel JID itself and `sender_name` to the channel name. Wholesaler attribution must be done by mapping `chat_id → wholesaler_id` rather than `sender_id → wholesaler_id`.
 
@@ -566,8 +589,8 @@ The reference implementation distinguishes three close-codes from `connection.up
 
 | Status code | Meaning | Action |
 |---|---|---|
-| `DisconnectReason.loggedOut` (401) | Device was unlinked from the phone | Do NOT auto-reconnect. Surface admin alert. Operator deletes auth folder + re-pairs. |
-| `405` | **Policy Violation** — WhatsApp rejected the connection (often stale auth state after protocol changes, or a banned/flagged account) | Do NOT auto-reconnect. Process exits 1. Operator deletes the `auth_pairing/` folder and re-pairs. Do not retry in a loop — you will get rate-limited. |
+| `DisconnectReason.loggedOut` (401) | Device was unlinked from the phone | Do NOT auto-reconnect. Surface admin alert.  + re-pairs. |
+| `405` | **Policy Violation** — WhatsApp rejected the connection (often stale auth state after protocol changes, or a banned/flagged account) | Do NOT auto-reconnect. Process exits 1. Do not retry in a loop — you will get rate-limited. |
 | Anything else | Transient (network, server restart) | Reconnect by re-invoking `startBot()`. Baileys' internal WebSocket layer handles short blips; this outer reconnect handles full socket teardowns. |
 
 `creds.update` must be wired to `saveCreds` from `useMultiFileAuthState` so credential rotations (rolling keys, app-state sync) are persisted.
@@ -578,14 +601,13 @@ The reference implementation distinguishes three close-codes from `connection.up
 
 All new endpoints are under `/api/v1/admin/whatsapp/`. They follow the same JWT Bearer auth pattern as the Telegram admin endpoints.
 
-### 6.1 New WhatsApp Admin Endpoints
+### 6.1 New WhatsApp Admin  (in FastAPI)
 
 | Endpoint | Description | Auth |
 |---|---|---|
-| `GET /admin/whatsapp/status` | Baileys connection status: connected, QR pending, disconnected. | JWT Admin |
-| `GET /admin/whatsapp/qr` | Returns current QR code as base64 PNG for admin UI display. Only available when status is `qr_pending`. | JWT Admin |
-| `POST /admin/whatsapp/pair` | Request pairing code for headless auth. Body: `{ "phone": "919876543210" }` (digits only). | JWT Admin |
-| `POST /admin/whatsapp/chats/resolve` | Unified resolve. Body: `{ "query": "<name fragment OR invite URL>" }`. Returns matching joined chats, or for an invite link returns the resolved chat plus a `not_joined` error if the bot is not yet a member. See §5.2.2. | JWT Admin |
+| `GET /admin/whatsapp/status` | Baileys connection status: `connected`, `pair_pending`, `disconnected`, `awaiting_pair_code`. | JWT Admin |
+| `POST /admin/whatsapp/pair` | Request pairing code. Body: `{ "phone": "919876543210" }` (digits only). Returns `{ "code": "ABCD-EFGH", "expires_in": 60 }`. | JWT Admin |
+| `POST /admin/whatsapp/chats/resolve` | Unified resolve. Body: `{ "query": "<name fragment OR invite URL>" }`. Returns matching joined chats, or for an invite link returns the resolved chat plus a `not_joined` error if the bot is not yet a member. See §5.2.2. | JWT Admin | 
 | `POST /admin/whatsapp/chats/add` | Add a resolved JID to the monitored whitelist. Body: `{ "jid": "...", "chat_name": "..." }`. Re-validates membership, inserts into `monitored_chats`, triggers whitelist reload, subscribes to newsletter live updates if channel. | JWT Admin |
 | `DELETE /admin/whatsapp/chats/{id}` | Remove WA chat from whitelist. Does NOT leave/unsubscribe on WhatsApp — that is the operator's action. | JWT Admin |
 | `GET /admin/whatsapp/chats` | List all monitored WA chats with status and message counts. | JWT Admin |
@@ -610,7 +632,6 @@ The WA Listener (Node.js) exposes a small internal HTTP API consumed only by Fas
 | Endpoint | Description |
 |---|---|
 | `GET /wa-internal/status` | Connection state + session info |
-| `GET /wa-internal/qr` | Base64 QR code (when pending) |
 | `GET /wa-internal/joined?q=<frag>` | List joined groups + subscribed channels, optionally filtered by name fragment (case-insensitive substring on `subject` / channel name). Used by Path A of resolve. |
 | `POST /wa-internal/resolve-link` | Body: `{ "url": "<invite url>" }`. Detects link kind, calls `groupGetInviteInfo` or `newsletterMetadata("invite", code)`, returns `{ jid, name, type, is_member }`. Used by Path B of resolve. |
 | `POST /wa-internal/whitelist/reload` | Trigger in-memory whitelist refresh from DB. |
@@ -630,9 +651,8 @@ wa-listener/                         # New top-level service directory
 ├── src/
 │   ├── index.ts                     # Entry point — starts Baileys + HTTP server
 │   ├── config.ts                    # Env var loading (dotenv)
-│   ├── auth.ts                      # Auth state management (disk or Postgres)
+│   ├── auth.ts                      # Auth state management (Postgres)
 │   ├── listener.ts                  # Baileys client setup + message handler
-│   ├── whitelist.ts                 # In-memory JID set + DB sync
 │   ├── downloader.ts                # downloadMediaMessage wrapper + validation
 │   ├── payload.ts                   # MessagePayload builder
 │   ├── queue.ts                     # ioredis RPUSH to ARQ queue
@@ -653,10 +673,10 @@ app/
 │
 ├── services/
 │   ├── wa_chat_resolver.py          # NEW — calls WA Listener internal API
-│   └── processing.py                # MODIFIED — add base64 decode branch
+│   └── processing.py                # MODIFIED — handle whatsapp messages
 │
 ├── workers/tasks/
-│   └── process_message.py           # MODIFIED — handle image_data_b64
+│   └── process_message.py           # MODIFIED — handle whatsapp messages
 │
 └── schemas/
     └── whatsapp_admin.py            # NEW — Pydantic schemas for WA admin APIs
@@ -665,7 +685,7 @@ app/
 ### 7.3 Full Updated Directory Tree
 
 ```
-buyerzone-catalog/
+bz-core/
 ├── app/                             # Python FastAPI (mostly unchanged)
 │   ├── api/v1/
 │   │   ├── admin.py
@@ -777,8 +797,7 @@ services:
     expose:
       - "3001"                        # Internal only — accessible to api service
     depends_on: [redis, postgres]
-    volumes:
-      - ./wa_sessions:/app/wa_sessions   # Persist Baileys auth state
+    # No volume mount for auth state — Baileys creds stored in platform_sessions (DB)
 
 volumes:
   postgres_data:
@@ -794,8 +813,6 @@ Add to `.env` (and `.env.example`):
 # WhatsApp Listener
 WA_LISTENER_URL=http://wa_listener:3001     # Internal Docker network URL
 WA_INTERNAL_SECRET=your_internal_secret    # Shared secret for FastAPI → WA listener calls
-WA_SESSION_DIR=/app/wa_sessions            # Auth state directory inside container
-WA_PHONE_NUMBER=919876543210               # Business number — DIGITS ONLY (country code + national number, no '+', no spaces, no leading zero). 7-15 digits. Used by sock.requestPairingCode().
 WA_LOG_LEVEL=info
 ```
 
@@ -846,27 +863,33 @@ CMD ["node", "dist/index.js"]
 }
 ```
 
-### 8.5 First-Run QR Authentication (Operations Runbook)
+### 8.5 Authentication (Admin UI Runbook) (UI not need to be developed now)
 
-```bash
-# 1. Start only the wa_listener service
-docker compose up wa_listener
+WhatsApp pairing is driven **entirely from the Admin UI**. There are no shell commands, no `docker compose` steps, and no log-watching involved in the operator-facing flow. The container is assumed to be running; whether the listener is paired is a state shown in the UI.
 
-# 2. Watch logs for QR code
-docker compose logs -f wa_listener
-# Output will show QR ASCII art or a message to scan
+**Listener states surfaced in the UI** (from `GET /admin/whatsapp/status`):
 
-# 3. On first run — Baileys prints QR to stdout
-#    Scan with WhatsApp mobile: Linked Devices → Link a Device
+| State | What the UI shows | Operator action |
+|---|---|---|
+| `awaiting_pair_code` | "Not paired. Enter the WhatsApp business number to start." | Type the phone number (digits only) and click **Pair**. |
+| `pair_pending` | "Pairing code: `ABCD-EFGH` — expires in 53s." | Enter the code in WhatsApp on the linked phone. |
+| `connected` | "Paired ✓ — connected as +91…" with last-seen timestamp. | None. |
+| `disconnected` | "Disconnected, retrying…" with reason and retry counter. | None unless reason is permanent (see below). |
+| `requires_repair` | "Session ended — re-pair required. Reason: `loggedOut` / `policy_violation`." with **Re-pair** button. | Click **Re-pair** → returns the listener to `awaiting_pair_code`, then enter the number again. |
 
-# 4. Auth state saved to ./wa_sessions/auth_state/
-# 5. Service connects and prints "Connection open"
+**First-time pairing flow (UI):**
 
-# OR — Headless pairing code flow:
-# POST /api/v1/admin/whatsapp/pair { "phone": "+919876543210" }
-# → Returns 8-digit code
-# → Enter in WhatsApp mobile: Linked Devices → Link with phone number
-```
+1. Open Admin → WhatsApp. Status shows `awaiting_pair_code`.
+2. Enter the WhatsApp business number (digits only, country code + national number, e.g. `919876543210`). Click **Pair**.
+3. UI displays the 8-character code with a 60-second countdown.
+4. On the linked phone: WhatsApp → Settings → Linked Devices → Link a device → "Link with phone number instead" → enter the code.
+5. UI transitions to `connected` within a few seconds; configured channels begin resolving and ingestion starts automatically.
+
+**Re-pairing flow (UI):**
+
+When a 401 (`loggedOut`) or 405 (Policy Violation) occurs the listener moves itself to `requires_repair`, clears its in-memory connection, and stops ingesting. The operator clicks **Re-pair** in the UI; FastAPI calls the listener's internal API to wipe `wa_sessions/auth_pairing/`, transitions back to `awaiting_pair_code`, and the operator repeats steps 2–5 above.
+
+> No SSH, no `docker compose`, no `rm -rf` is ever required from operators. Those remain available as a break-glass path for engineers, but they are not part of the documented procedure.
 
 ---
 
@@ -877,12 +900,12 @@ docker compose logs -f wa_listener
 **Goal:** WA Listener container connects to WhatsApp and maintains a stable session.
 
 1. Set up `wa-listener/` Node.js project with TypeScript
-2. Implement Baileys authentication — disk-based auth state
-3. Implement QR display to stdout + pairing code HTTP endpoint
-4. Implement reconnection logic with exponential backoff
-5. Internal HTTP API skeleton (`/wa-internal/status`, `/wa-internal/qr`)
+2. Implement Baileys auth on `useMultiFileAuthState` — pairing code only, `printQRInTerminal: false`
+3. Implement `/wa-internal/pair` (request pairing code) and `/wa-internal/status` (auth state machine: `awaiting_pair_code` → `pair_pending` → `connected` → `disconnected` / `requires_repair`)
+4. Implement reconnection logic for transient closes; surface 401/405 as `requires_repair` (no auto-reconnect)
+5. Internal HTTP API skeleton (`/wa-internal/status`, `/wa-internal/pair`, `/wa-internal/repair`)
 6. Add `wa_listener` service to docker-compose
-7. Verify: container connects, session persists across restarts
+7. Verify: pair via API → session persists across container restarts → trigger repair → re-pair end-to-end
 
 ### Phase 2 — Schema Migration & Whitelist (Week 1–2)
 
@@ -890,7 +913,6 @@ docker compose logs -f wa_listener
 
 1. Alembic migration: add `platform` column to `monitored_chats`
 2. Alembic migration: rename `telegram_msg_id` → `message_id` (if decided)
-3. Implement `whitelist.ts` — in-memory JID set, loads from PostgreSQL on startup
 4. Implement `/wa-internal/groups` — fetches joined groups + channels via Baileys
 5. Implement `/admin/whatsapp/chats/*` FastAPI routes + `wa_chat_resolver.py`
 6. Verify: admin can search WA groups, add to whitelist, whitelist reloads in Node.js
@@ -922,13 +944,13 @@ docker compose logs -f wa_listener
 
 **Goal:** Operations team can manage WA chats, monitor ingestion health.
 
-1. `/admin/whatsapp/status` — surface Baileys connection state to admin UI
+1. `/admin/whatsapp/status` — surface listener state machine (`awaiting_pair_code` / `pair_pending` / `connected` / `disconnected` / `requires_repair`) to admin UI
 2. `/admin/stats` — add WhatsApp breakdown to existing stats endpoint
 3. `/admin/logs` — add `?platform=whatsapp` filter
-4. Session revocation detection — alert admin when QR re-auth needed
+4. Session revocation detection — flip listener to `requires_repair` on 401/405 and surface a re-pair prompt in the UI
 5. Dead-letter queue handling for WA failed jobs (same as Telegram)
 6. Load test: 100 WA messages/hour sustained → verify no queue backlog
-7. Documentation: operations runbook for re-authentication
+7. Documentation: admin UI runbook for pairing and re-pairing
 
 ---
 
@@ -945,7 +967,6 @@ docker compose logs -f wa_listener
 
 ### 10.2 Baileys Session Security
 
-- Auth state directory (`./wa_sessions/`) excluded from git via `.gitignore`
 - Auth state backed up to R2 on schedule (same as PostgreSQL backups)
 - If session file is compromised, revoke immediately via WhatsApp mobile: Settings → Linked Devices → Remove device
 - Session file contains cryptographic keys — treat with same sensitivity as private keys
@@ -1038,13 +1059,11 @@ Downstream modules consume the unified product catalog without needing to know t
 
 | Question | Details | Recommendation | Owner's Response |
 |---|---|---|---|
-| Rename `telegram_msg_id` column | Rename to `message_id` in `products` and `ingestion_logs` for platform neutrality? | Yes — clean up now before WA data enters the tables. One migration. | |
-| Wholesaler WA JID mapping | Add `wa_jid` column to `wholesalers` table for cross-platform dedup and contact info? | Yes — required for accurate dedup and order management integration. | |
-| Auth method: QR vs pairing code | Which flow to use for initial WA authentication? | Pairing code preferred for headless VPS — no need to transfer QR image. | |
-| WA session backup strategy | Disk-only or also persist Baileys auth state to `wa_auth_sessions` PostgreSQL table? | Disk + R2 backup via cron. PostgreSQL table adds complexity without benefit at this scale. | |
-| View-once message handling | WhatsApp "view once" images — Baileys can still download them. Should they be ingested? | Yes — wholesalers sometimes use view-once for freshness signalling. Ingest and store. | |
-| Stale product threshold for WA | Same 30-day default as Telegram, or different? | Same default — keep configuration unified. Configurable per wholesaler. | |
-| Cross-platform dedup scope | Dedup across platforms (same image from WA + Telegram = 1 product) or per-platform only? | Cross-platform — same `wholesaler_id` + cosine > 0.96 already handles it. Verify. | |
+| Rename `telegram_msg_id` column | Rename to `message_id` in `products` and `ingestion_logs` for platform neutrality? | Yes — clean up now before WA data enters the tables. One migration. | Yes |
+| Wholesaler WA JID mapping | Add `wa_jid` column to `wholesalers` table for cross-platform dedup and contact info? | Yes — required for accurate dedup and order management integration. | yes |
+| View-once message handling | WhatsApp "view once" images — Baileys can still download them. Should they be ingested? | Yes — wholesalers sometimes use view-once for freshness signalling. Ingest and store. | yes |
+| Stale product threshold for WA | Same 30-day default as Telegram, or different? | Same default — keep configuration unified. Configurable per wholesaler. |  same - 30 day|
+| Cross-platform dedup scope | Dedup across platforms (same image from WA + Telegram = 1 product) or per-platform only? | Cross-platform — same `wholesaler_id` + cosine > 0.96 already handles it. Verify. | per-platform |
 
 ---
 

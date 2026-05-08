@@ -66,11 +66,13 @@ def create_app() -> FastAPI:
     from app.api.v1.media import router as media_router
     from app.api.v1.products import router as products_router
     from app.api.v1.search import router as search_router
+    from app.api.v1.telegram_auth import router as telegram_auth_router
 
     app.include_router(media_router)  # public, no prefix, no auth
 
     prefix = "/api/v1"
     app.include_router(admin_router, prefix=prefix)
+    app.include_router(telegram_auth_router, prefix=prefix)
     app.include_router(search_router, prefix=prefix)
     app.include_router(products_router, prefix=prefix)
     app.include_router(internal_router, prefix=prefix)
