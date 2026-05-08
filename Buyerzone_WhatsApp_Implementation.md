@@ -96,11 +96,13 @@ Everything from CLIP embedding onward is handled by the **existing** Python ARQ 
 | Component | Purpose | Layer |
 |---|---|---|
 | Node.js 20 LTS | Runtime for Baileys — required by the library | Runtime |
-| Baileys (`@whiskeysockets/baileys`) | Open-source WhatsApp Web multi-device client. Most capable WhatsApp automation library. | Ingestion |
+| Baileys (`baileys` v7+) | Open-source WhatsApp Web multi-device client. Most capable WhatsApp automation library. Pinned to the maintained `baileys` package on npm (the older `@whiskeysockets/baileys` fork is deprecated). | Ingestion |
 | ioredis | Node.js Redis client — pushes payloads to shared ARQ queue | Queue Bridge |
 | sharp | Fast image processing in Node — resize before upload, validate image bytes | Image Util |
-| pino | Structured JSON logging — matches Python service log format | Logging |
+| pino | Structured JSON logging (run at `silent` for Baileys internals; INFO for our own logger) | Logging |
 | dotenv | Environment variable loading | Config |
+
+> **Library note:** The reference implementation has been validated against `baileys@^7.0.0-rc10`. Use `fetchLatestBaileysVersion()` at startup so the client always negotiates with WhatsApp Web's currently-served protocol version — the version embedded in the npm package can lag and cause `405 Policy Violation` rejections.
 
 ### 3.2 Reused Components (No Changes)
 
@@ -221,94 +223,242 @@ The Node.js listener and the Python workers communicate via this JSON payload pu
 
 ### 5.1 Authentication Flow (One-Time Setup)
 
-Baileys uses the **WhatsApp Web multi-device protocol**. Authentication generates a set of cryptographic keys stored as auth state. This is a one-time operation.
+Baileys uses the **WhatsApp Web multi-device protocol**. Authentication generates a set of cryptographic keys stored as auth state via `useMultiFileAuthState(<dir>)`. This is a one-time operation.
+
+**Primary path: Pairing Code (chosen for headless VPS)**
+
+The reference implementation skips QR entirely on first run and uses an 8-digit pairing code. This is operationally simpler in Docker — no QR image to ferry from container stdout to a phone.
 
 ```
-Step 1: Developer runs WA listener container for first time
-        → Baileys generates QR code
-        → QR printed to container stdout as ASCII art
-        → Developer scans QR with WhatsApp mobile app
-          (WhatsApp → Linked Devices → Link a Device)
+Step 1: First-run startup
+        → useMultiFileAuthState('/app/wa_sessions/auth_pairing') loads empty state
+        → fetchLatestBaileysVersion() → negotiate current WA Web protocol version
+        → makeWASocket({ version, auth: state, browser: Browsers.ubuntu('Chrome'),
+                          logger: pino({ level: 'silent' }), printQRInTerminal: false })
+        → Wait ~3s for the initial socket handshake to complete
+        → If !sock.authState.creds.registered:
+            phone = WA_PHONE_NUMBER env (digits only, country code + national number,
+                    no '+', no spaces, no leading zero, e.g. "919876543210")
+            code  = await sock.requestPairingCode(phone)
+            → Format as "ABCD-EFGH" and surface via:
+                a) Container logs (operator runbook), AND
+                b) GET /wa-internal/pair-code (consumed by Admin UI)
+            → Code expires in ~60 seconds; restarting requests a fresh one
 
-Step 2: Baileys receives auth credentials
-        → Auth state saved to /app/wa_sessions/auth_state/
-        → Session is now persistent — no QR needed on restart
+Step 2: Operator enters the code in WhatsApp mobile
+        WhatsApp → Settings → Linked Devices → Link a device
+                 → "Link with phone number instead" (small text at bottom)
+                 → Enter the 8-digit code
 
-Step 3: All subsequent startups
-        → Baileys loads auth state from disk
-        → Connects to WhatsApp WebSocket servers
-        → No QR required unless session is revoked
+Step 3: creds.update event fires
+        → saveCreds() persists to /app/wa_sessions/auth_pairing/
+        → connection.update emits { connection: 'open' }
+        → Channel resolution + listener begin (see 5.5)
 
-Note: Session is revoked if:
-  - The linked device is manually removed from WhatsApp mobile
+Step 4: All subsequent restarts
+        → Auth state loaded from disk → connects with no operator action
+
+Session is revoked if:
+  - The linked device is removed from WhatsApp mobile
   - The phone is inactive for 14+ days (WhatsApp policy)
   - The number is banned
-  Revocation requires re-scanning QR code.
+  - WhatsApp returns close code 405 (Policy Violation) — auth folder must be deleted
+    and a fresh pairing code requested. See 5.6.
 ```
 
-**Pairing Code Alternative (Headless Servers)**
+**Fallback: QR Code**
 
-If the server has no display and QR cannot be scanned easily, Baileys supports pairing via an 8-digit code:
-
-```
-→ requestPairingCode(phoneNumber) call in Baileys
-→ Code displayed in logs (e.g. "ABCD-1234")
-→ Developer enters code in WhatsApp mobile:
-  WhatsApp → Linked Devices → Link with phone number instead
-```
+QR is supported via `printQRInTerminal: true` (or rendering the QR string from `connection.update`'s `qr` field to a PNG and exposing it at `/wa-internal/qr`). Use only if pairing code is unavailable for the target number.
 
 ### 5.2 Admin — Adding Monitored Chats
 
-Admins interact via the Admin API. The WhatsApp listener service exposes an internal HTTP endpoint to list and validate joined groups.
+The flow mirrors the Telegram admin UX (search-then-add) but accepts **either a name fragment or an invite link** in a single resolve endpoint. The bot **never auto-joins**: the operator joins the chat from the linked WhatsApp account first, and the bot's job is only to resolve-and-validate-and-add.
+
+This design protects the account from WhatsApp's automation heuristics (rapid programmatic joins are a common ban trigger) and keeps a clean separation: human owns membership, bot owns monitoring.
+
+#### 5.2.1 Supported chat types
+
+| Type | JID suffix | Invite link shape | Resolve API |
+|---|---|---|---|
+| WA Group | `@g.us` | `https://chat.whatsapp.com/<code>` | `sock.groupGetInviteInfo(code)` |
+| WA Community (parent / child sub-group) | `@g.us` | `https://chat.whatsapp.com/<code>` | `sock.groupGetInviteInfo(code)` — same call as groups; community-ness is exposed in metadata flags. Each sub-group is added separately. |
+| WA Channel (Newsletter) | `@newsletter` | `https://whatsapp.com/channel/<code>` | `sock.newsletterMetadata("invite", code)` |
+
+> Communities are not a single monitored entity. The parent announcement group and each sub-group are distinct JIDs. The admin adds whichever ones carry product listings.
+
+#### 5.2.2 Unified resolve endpoint
 
 ```
-Admin Request: POST /admin/whatsapp/chats/search  { "name": "Buyerzone WA" }
+Admin Request: POST /admin/whatsapp/chats/resolve
+Body: { "query": "<name fragment OR full invite URL>" }
+```
 
-  → FastAPI calls WA Listener internal HTTP endpoint: GET /wa-internal/groups
-  → Baileys fetches all joined group metadata via groupFetchAllParticipating()
-  → Filter groups where subject contains search name (case-insensitive)
-  → Also search WhatsApp Channels via newsletterSubscribed()
-  → Return list: [ { jid, name, type, participant_count } ]
+The listener decides between two paths based on input shape:
 
-Admin Request: POST /admin/whatsapp/chats/add  { "jid": "120363...@g.us", "chat_name": "..." }
+**Path A — Name search (input does not start with `http`)**
 
-  → Validate JID exists in Baileys joined groups
-  → INSERT into monitored_chats (platform='whatsapp', chat_type='wa_group')
-  → Notify WA Listener via internal endpoint: POST /wa-internal/whitelist/reload
-  → In-memory JID set in Node.js service updated immediately
+```
+→ FastAPI calls WA Listener: GET /wa-internal/joined?q=<query>
+→ Baileys fetches joined chats:
+    groups    = await sock.groupFetchAllParticipating()        // map jid → metadata
+    channels  = sock.newsletterListSubscribed?.() ?? []        // followed newsletters
+                (fallback: cache populated from CHANNEL_LINKS resolved at startup)
+→ Case-insensitive substring match on group `subject` and channel name
+→ Return: [
+    {
+      "jid": "120363...@g.us",
+      "name": "Buyerzone Wholesalers WA",
+      "type": "wa_group",          // or wa_channel
+      "is_community_parent": false,
+      "is_community_subgroup": false,
+      "participant_count": 142,
+      "already_monitored": false   // looked up against monitored_chats
+    },
+    ...
+  ]
+```
+
+If the operator hasn't joined the chat yet, it won't appear here. The UI should surface a hint: "Don't see it? Paste the invite link instead."
+
+**Path B — Invite link (input starts with `http`)**
+
+```
+→ Parse link → { kind: 'group' | 'channel', code: <last path segment> }
+
+→ For groups (chat.whatsapp.com):
+    info = await sock.groupGetInviteInfo(code)
+    jid  = info.id                              // 120363...@g.us
+    name = info.subject
+
+→ For channels (whatsapp.com/channel):
+    meta = await sock.newsletterMetadata("invite", code)
+    jid  = meta.id
+    name = meta.thread_metadata?.name?.text
+        || meta.threadMetadata?.name?.text
+        || meta.name || meta.subject
+
+→ Membership check (CRITICAL):
+    For groups:    is jid present in groupFetchAllParticipating()?
+    For channels:  is jid present in subscribed-newsletter list / channel cache?
+
+  NOT a member  → 409 Conflict
+                  { "error": "not_joined",
+                    "message": "Resolved '<name>' but the bot account is not yet a
+                                member. Open WhatsApp on the linked phone, join via
+                                this invite link, then retry." ,
+                    "preview": { "jid": ..., "name": ..., "type": ... } }
+                  (Preview is returned so the admin UI can show what they're about to
+                  monitor — but the row is NOT inserted.)
+
+  IS a member   → 200 OK, same shape as Path A's list element
+                  with already_monitored set from monitored_chats lookup.
+```
+
+#### 5.2.3 Add endpoint
+
+```
+Admin Request: POST /admin/whatsapp/chats/add
+Body: { "jid": "<resolved jid>", "chat_name": "<optional override>" }
+
+  → Re-validate JID is currently in joined chats (defensive — operator may have
+    left between resolve and add)
+  → INSERT into monitored_chats (
+        platform='whatsapp',
+        chat_id=<jid>,
+        chat_type='wa_group' | 'wa_channel',
+        chat_name=<resolved or overridden name>
+    )
+  → Notify WA Listener: POST /wa-internal/whitelist/reload
+  → In-memory JID Set in Node.js updated immediately
+  → If chat_type='wa_channel': fire-and-forget
+        sock.newsletterSubscribeLiveUpdates(jid)
+    so message events start flowing for this newsletter
   → Listener begins capturing messages from this JID instantly
+```
+
+#### 5.2.4 Operator runbook (UI copy)
+
+```
+To add a WhatsApp group / community sub-group / channel:
+
+  1. On the phone linked to the bot, open WhatsApp and JOIN the chat
+     (via invite link, QR, or accept-invite flow).
+     - Groups & community sub-groups: chat.whatsapp.com/<code>
+     - Channels:                      whatsapp.com/channel/<code>
+
+  2. In Buyerzone Admin → WhatsApp → Add Chat:
+       - Type a name fragment (matches anything you have already joined),
+         OR paste the full invite link.
+       - Pick the result, click Add.
+
+  3. The bot starts capturing on the next image posted to that chat.
+     No restart needed.
+
+If you paste an invite link and see "not_joined": you haven't joined the
+chat on the linked phone yet. Do step 1, then retry.
 ```
 
 ### 5.3 Ingestion Flow (Real-Time, 24/7)
 
 ```
-Event: New message arrives via Baileys 'messages.upsert' event
+Event: New batch arrives via sock.ev.on('messages.upsert', { messages, type })
                 │
                 ▼
-FILTER 1: Is message type 'notify'?  (not history sync, not reaction)
+FILTER 1: type ∈ {'notify', 'append'}?
+          (skip 'history' sync batches, 'prepend', etc.)
+          NO  → discard silently
+          YES → continue per-message
+
+For each msg in messages:
+                │
+                ▼
+FILTER 2: msg.key.fromMe === true?
+          YES → skip (own messages, e.g. echoes)
+                │
+                ▼
+FILTER 3: msg.key.remoteJid in monitored JID whitelist?
           NO  → discard silently
           YES → continue
                 │
                 ▼
-FILTER 2: Is message.key.remoteJid in monitored JID whitelist?
-          NO  → discard silently
+UNWRAP:   msg.message envelope can be wrapped — peel layers in order:
+            ephemeralMessage.message
+            viewOnceMessage.message
+            viewOnceMessageV2.message
+            viewOnceMessageV2Extension.message
+            documentWithCaptionMessage.message
+            editedMessage.message
+          (fall back to msg.message itself)
+                │
+                ▼
+FILTER 4: Does the unwrapped content carry an imageMessage?
+          Look at:
+            content.imageMessage
+            content.extendedTextMessage?.contextInfo?.quotedMessage?.imageMessage
+          NO  → discard (text-only, stickers, documents, etc.)
           YES → continue
                 │
                 ▼
-FILTER 3: Does message contain an image?
-          (imageMessage or viewOnceMessage with imageMessage)
-          NO  → discard (text-only messages, stickers, documents)
-          YES → continue
-                │
-                ▼
-FILTER 4: Does caption contain "out of stock", "stock out",
-          "not available", "sold out" (case-insensitive)?
+FILTER 5: Does caption match "out of stock" | "stock out" |
+          "not available" | "sold out" (case-insensitive)?
           YES → log as skipped (out of stock) → discard
           NO  → continue
                 │
                 ▼
-DOWNLOAD: downloadMediaMessage(message, 'buffer')
-          → Returns raw image Buffer
+DOWNLOAD: Two-path strategy (validated in reference implementation):
+
+          if (imageMsg.mediaKey && imageMsg.mediaKey.length > 0):
+              // Encrypted media path — normal case
+              buffer = await downloadMediaMessage(msg, 'buffer', {})
+          else:
+              // Channel/newsletter or relayed message with no mediaKey
+              directUrl = imageMsg.url
+                       || (imageMsg.directPath
+                             ? `https://mmg.whatsapp.net${imageMsg.directPath}`
+                             : null)
+              if (!directUrl) → log + skip
+              buffer = Buffer.from(await (await fetch(directUrl)).arrayBuffer())
+
           → Validate magic bytes: JPEG (FF D8 FF) or PNG (89 50 4E 47)
           → Resize to max 1024px longest edge using sharp (preserve aspect)
           → Encode to base64
@@ -316,12 +466,19 @@ DOWNLOAD: downloadMediaMessage(message, 'buffer')
                 ▼
 BUILD:    Construct MessagePayload JSON object
           → source_platform: 'whatsapp'
-          → chat_id: message.key.remoteJid
-          → message_id: message.key.id
-          → sender_id: message.key.participant || message.key.remoteJid
-          → caption: imageMessage.caption || ''
+          → chat_id:    msg.key.remoteJid
+          → chat_type:  isJidGroup(jid) ? 'wa_group'
+                       : jid.endsWith('@newsletter') || jid.endsWith('@broadcast')
+                         ? 'wa_channel' : 'personal'
+          → message_id: msg.key.id
+          → sender_id:  derived from msg.key.participant (groups/channels) or
+                        msg.key.remoteJid when remoteJid ends with
+                        '@s.whatsapp.net' or '@c.us' (1:1 chats).
+                        Strip device suffix (':NN') and validate /^\d{7,15}$/.
+          → sender_name: msg.pushName || sender_id
+          → caption:    imageMsg.caption || ''
           → image_data_b64: base64 string
-          → received_at: ISO timestamp from message.messageTimestamp
+          → received_at: ISO timestamp from msg.messageTimestamp (unix seconds → ms)
                 │
                 ▼
 ENQUEUE:  ioredis.rpush('arq:queue:process_message', JSON.stringify(payload))
@@ -386,12 +543,34 @@ WhatsApp Channels (called "Newsletters" in Baileys) behave differently from grou
 | Property | Groups | Channels (Newsletters) |
 |---|---|---|
 | JID suffix | `@g.us` | `@newsletter` |
-| Sender identity | Participant JID available | Admin only — anonymous |
-| Fetch API | `groupFetchAllParticipating()` | `newsletterSubscribed()` |
+| Sender identity | Participant JID available | Admin only — anonymous (no usable phone number) |
+| Resolve from invite link | n/a | `sock.newsletterMetadata("invite", <code>)` where `<code>` is the last path segment of `https://whatsapp.com/channel/<code>` |
+| Resolve from JID | n/a | `sock.newsletterMetadata("jid", <jid>)` |
+| Live updates | Always-on | Must call `sock.newsletterSubscribeLiveUpdates(jid)` after first message — without it, message events for that channel may not flow |
 | Message event | `messages.upsert` | `messages.upsert` (same event) |
 | Join mechanism | Invite link | Subscribe button |
 
-The listener handles both transparently — the same `messages.upsert` handler fires for both. The `chat_type` in `monitored_chats` is set to `wa_group` or `wa_channel` for admin visibility, but the ingestion logic is identical.
+**Channel name resolution + caching (validated pattern):**
+
+1. On `connection.update` → `'open'`, iterate the configured channel invite links from `monitored_chats` (platform=whatsapp, chat_type=wa_channel). For each, extract `<code>` from the URL and call `newsletterMetadata("invite", code)`. Cache `{ jid → name }` in an in-memory `Map`. The name lives at `meta.thread_metadata?.name?.text || meta.threadMetadata?.name?.text || meta.name || meta.subject`.
+2. On `messages.upsert` for an `@newsletter` JID not yet in cache, call `newsletterMetadata("jid", jid)` once with an 8-second timeout (the API can hang). Cache the result — including a `null` name on failure — to avoid retry storms. Then fire-and-forget `newsletterSubscribeLiveUpdates(jid)` so subsequent updates flow.
+3. Group names are resolved on demand via `sock.groupMetadata(jid).subject`; failures fall back to the JID prefix.
+
+The listener handles both group and channel JIDs transparently — the same `messages.upsert` handler fires for both. The `chat_type` in `monitored_chats` is set to `wa_group` or `wa_channel` for admin visibility, but the ingestion logic is identical aside from the resolution + subscription steps above.
+
+> **Sender attribution for channels:** because channel posts are anonymous from the admin, `sender_id` falls back to the channel JID itself and `sender_name` to the channel name. Wholesaler attribution must be done by mapping `chat_id → wholesaler_id` rather than `sender_id → wholesaler_id`.
+
+### 5.6 Disconnect & Reconnect Handling
+
+The reference implementation distinguishes three close-codes from `connection.update`'s `lastDisconnect.error.output.statusCode`:
+
+| Status code | Meaning | Action |
+|---|---|---|
+| `DisconnectReason.loggedOut` (401) | Device was unlinked from the phone | Do NOT auto-reconnect. Surface admin alert. Operator deletes auth folder + re-pairs. |
+| `405` | **Policy Violation** — WhatsApp rejected the connection (often stale auth state after protocol changes, or a banned/flagged account) | Do NOT auto-reconnect. Process exits 1. Operator deletes the `auth_pairing/` folder and re-pairs. Do not retry in a loop — you will get rate-limited. |
+| Anything else | Transient (network, server restart) | Reconnect by re-invoking `startBot()`. Baileys' internal WebSocket layer handles short blips; this outer reconnect handles full socket teardowns. |
+
+`creds.update` must be wired to `saveCreds` from `useMultiFileAuthState` so credential rotations (rolling keys, app-state sync) are persisted.
 
 ---
 
@@ -405,10 +584,10 @@ All new endpoints are under `/api/v1/admin/whatsapp/`. They follow the same JWT 
 |---|---|---|
 | `GET /admin/whatsapp/status` | Baileys connection status: connected, QR pending, disconnected. | JWT Admin |
 | `GET /admin/whatsapp/qr` | Returns current QR code as base64 PNG for admin UI display. Only available when status is `qr_pending`. | JWT Admin |
-| `POST /admin/whatsapp/pair` | Request pairing code for headless auth. Body: `{ "phone": "+919876543210" }`. | JWT Admin |
-| `POST /admin/whatsapp/chats/search` | Search joined WA groups and channels by name. | JWT Admin |
-| `POST /admin/whatsapp/chats/add` | Add WA JID to monitored whitelist. | JWT Admin |
-| `DELETE /admin/whatsapp/chats/{id}` | Remove WA chat from whitelist. | JWT Admin |
+| `POST /admin/whatsapp/pair` | Request pairing code for headless auth. Body: `{ "phone": "919876543210" }` (digits only). | JWT Admin |
+| `POST /admin/whatsapp/chats/resolve` | Unified resolve. Body: `{ "query": "<name fragment OR invite URL>" }`. Returns matching joined chats, or for an invite link returns the resolved chat plus a `not_joined` error if the bot is not yet a member. See §5.2.2. | JWT Admin |
+| `POST /admin/whatsapp/chats/add` | Add a resolved JID to the monitored whitelist. Body: `{ "jid": "...", "chat_name": "..." }`. Re-validates membership, inserts into `monitored_chats`, triggers whitelist reload, subscribes to newsletter live updates if channel. | JWT Admin |
+| `DELETE /admin/whatsapp/chats/{id}` | Remove WA chat from whitelist. Does NOT leave/unsubscribe on WhatsApp — that is the operator's action. | JWT Admin |
 | `GET /admin/whatsapp/chats` | List all monitored WA chats with status and message counts. | JWT Admin |
 
 ### 6.2 Shared Endpoints — No Changes Required
@@ -432,9 +611,11 @@ The WA Listener (Node.js) exposes a small internal HTTP API consumed only by Fas
 |---|---|
 | `GET /wa-internal/status` | Connection state + session info |
 | `GET /wa-internal/qr` | Base64 QR code (when pending) |
-| `GET /wa-internal/groups` | All joined groups + channels metadata |
-| `POST /wa-internal/whitelist/reload` | Trigger in-memory whitelist refresh from DB |
-| `POST /wa-internal/pair` | Initiate pairing code flow |
+| `GET /wa-internal/joined?q=<frag>` | List joined groups + subscribed channels, optionally filtered by name fragment (case-insensitive substring on `subject` / channel name). Used by Path A of resolve. |
+| `POST /wa-internal/resolve-link` | Body: `{ "url": "<invite url>" }`. Detects link kind, calls `groupGetInviteInfo` or `newsletterMetadata("invite", code)`, returns `{ jid, name, type, is_member }`. Used by Path B of resolve. |
+| `POST /wa-internal/whitelist/reload` | Trigger in-memory whitelist refresh from DB. |
+| `POST /wa-internal/subscribe-newsletter` | Body: `{ "jid": "...@newsletter" }`. Calls `sock.newsletterSubscribeLiveUpdates(jid)`. Invoked after a channel is added to monitored chats. |
+| `POST /wa-internal/pair` | Initiate pairing code flow. |
 
 Internal API is bound to `127.0.0.1` within Docker network only.
 
@@ -614,7 +795,7 @@ Add to `.env` (and `.env.example`):
 WA_LISTENER_URL=http://wa_listener:3001     # Internal Docker network URL
 WA_INTERNAL_SECRET=your_internal_secret    # Shared secret for FastAPI → WA listener calls
 WA_SESSION_DIR=/app/wa_sessions            # Auth state directory inside container
-WA_PHONE_NUMBER=+919876543210              # Business number (for pairing code flow)
+WA_PHONE_NUMBER=919876543210               # Business number — DIGITS ONLY (country code + national number, no '+', no spaces, no leading zero). 7-15 digits. Used by sock.requestPairingCode().
 WA_LOG_LEVEL=info
 ```
 
@@ -645,7 +826,7 @@ CMD ["node", "dist/index.js"]
 ```json
 {
   "dependencies": {
-    "@whiskeysockets/baileys": "^6.7.0",
+    "baileys": "^7.0.0-rc10",
     "ioredis": "^5.4.1",
     "sharp": "^0.33.4",
     "express": "^4.19.2",
