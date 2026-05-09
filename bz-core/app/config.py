@@ -14,7 +14,6 @@ class Settings(BaseSettings):
     # ── Telegram ──────────────────────────────────────────────────────────────
     telegram_api_id: int
     telegram_api_hash: str
-    telegram_session_name: str = "buyerzone"
 
     # ── PostgreSQL ─────────────────────────────────────────────────────────────
     database_url: str  # postgresql+asyncpg://...
@@ -59,6 +58,10 @@ class Settings(BaseSettings):
     staleness_days: int = 30
     ingestion_internal_port: int = 8001
     ingestion_internal_url: str = "http://localhost:8001"
+
+    # ── WhatsApp Listener ──────────────────────────────────────────────────────
+    wa_listener_url: str = "http://wa_listener:3001"
+    wa_internal_secret: str = "change_this_wa_internal_secret"
 
     @property
     def is_production(self) -> bool:

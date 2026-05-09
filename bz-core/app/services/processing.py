@@ -26,7 +26,6 @@ _PRICE_RE = re.compile(
     rf"|(?:price|rate)\s*[:\-]?\s*(\d[\d,]*(?:\.\d{{1,2}})?)",
     re.IGNORECASE,
 )
-# Name = caption with price tokens stripped
 _CLEAN_RE = re.compile(
     rf"{_PRICE_PREFIX}(?:₹|Rs\.?\s*)\d[\d,]*(?:\.\d{{1,2}})?"
     rf"|{_PRICE_PREFIX}\d[\d,]*\s*/-"
@@ -59,25 +58,22 @@ def _extract_name(caption: str) -> str | None:
     name = _CLEAN_RE.sub("", caption).strip()
     if not name:
         return None
-    # First non-empty line, capped at 500 chars to fit products.name VARCHAR(500)
     first_line = next((ln.strip() for ln in name.splitlines() if ln.strip()), name)
     return first_line[:500]
 
 
 async def _get_wholesaler_id(
     session,
-    sender_id: int | None,
+    source_platform: str,
+    sender_id: str | int | None,
     sender_username: str | None = None,
     sender_name: str | None = None,
     chat_title: str | None = None,
 ):
-    """Resolve a wholesaler row for the Telegram sender.
+    """Resolve or auto-create a wholesaler row for the sender.
 
-    If the sender isn't registered yet, insert a stub row so their products
-    are immediately attributable and can participate in per-wholesaler dedup.
-    Admins can later rename / deactivate via the admin API.
-
-    Uses ON CONFLICT (telegram_id) to stay safe under concurrent ingests.
+    Telegram: looks up by telegram_id (int).
+    WhatsApp: looks up by wa_jid (string JID like "919876...@s.whatsapp.net").
     """
     if sender_id is None:
         return None
@@ -87,22 +83,52 @@ async def _get_wholesaler_id(
 
     from app.models.wholesaler import Wholesaler
 
-    result = await session.execute(select(Wholesaler.id).where(Wholesaler.telegram_id == sender_id))
+    if source_platform == "whatsapp":
+        wa_jid = str(sender_id)
+        result = await session.execute(
+            select(Wholesaler.id).where(Wholesaler.wa_jid == wa_jid)
+        )
+        wid = result.scalar_one_or_none()
+        if wid is not None:
+            return wid
+
+        name = (chat_title or "").strip() or sender_name or wa_jid
+        stmt = (
+            pg_insert(Wholesaler)
+            .values(wa_jid=wa_jid, name=name, is_active=True)
+            .on_conflict_do_nothing(index_elements=["wa_jid"])
+            .returning(Wholesaler.id)
+        )
+        inserted = (await session.execute(stmt)).scalar_one_or_none()
+        await session.commit()
+
+        if inserted is not None:
+            log.info("wholesaler_auto_created", wa_jid=wa_jid, wholesaler_id=str(inserted))
+            return inserted
+
+        result = await session.execute(
+            select(Wholesaler.id).where(Wholesaler.wa_jid == wa_jid)
+        )
+        return result.scalar_one_or_none()
+
+    # Telegram path
+    tg_id = int(sender_id)
+    result = await session.execute(
+        select(Wholesaler.id).where(Wholesaler.telegram_id == tg_id)
+    )
     wid = result.scalar_one_or_none()
     if wid is not None:
         return wid
 
-    # Prefer the source group/channel title (it identifies the wholesaler
-    # as a business) → sender display name → @username → numeric id fallback.
     name = (
         (chat_title or "").strip()
         or sender_name
-        or (f"@{sender_username}" if sender_username else f"tg:{sender_id}")
+        or (f"@{sender_username}" if sender_username else f"tg:{tg_id}")
     )
     stmt = (
         pg_insert(Wholesaler)
         .values(
-            telegram_id=sender_id,
+            telegram_id=tg_id,
             telegram_username=sender_username,
             name=name,
             is_active=True,
@@ -116,21 +142,22 @@ async def _get_wholesaler_id(
     if inserted is not None:
         log.info(
             "wholesaler_auto_created",
-            telegram_id=sender_id,
+            telegram_id=tg_id,
             username=sender_username,
             wholesaler_id=str(inserted),
         )
         return inserted
 
-    # Lost the race — another worker just inserted. Re-select.
-    result = await session.execute(select(Wholesaler.id).where(Wholesaler.telegram_id == sender_id))
+    result = await session.execute(
+        select(Wholesaler.id).where(Wholesaler.telegram_id == tg_id)
+    )
     return result.scalar_one_or_none()
 
 
-async def _check_duplicate(vector: list[float], wholesaler_id: uuid.UUID | None) -> bool:
-    # Dedup is per-wholesaler by design: the same product from different
-    # wholesalers (with different rates) must be kept. Skip the check
-    # entirely when the sender isn't linked to a known wholesaler.
+async def _check_duplicate(
+    vector: list[float], wholesaler_id: uuid.UUID | None, source_platform: str
+) -> bool:
+    # Per-platform dedup: same wholesaler + same platform + cosine > threshold + last 30 days.
     if wholesaler_id is None:
         return False
 
@@ -144,6 +171,7 @@ async def _check_duplicate(vector: list[float], wholesaler_id: uuid.UUID | None)
     must = [
         FieldCondition(key="status", match=MatchValue(value="active")),
         FieldCondition(key="wholesaler_id", match=MatchValue(value=str(wholesaler_id))),
+        FieldCondition(key="source_platform", match=MatchValue(value=source_platform)),
         FieldCondition(key="received_at", range=Range(gte=cutoff)),
     ]
 
@@ -158,24 +186,41 @@ async def _check_duplicate(vector: list[float], wholesaler_id: uuid.UUID | None)
 
 
 async def process_message(payload: dict) -> None:
-    """Full pipeline. Image path: validate → upload → embed → dedup → persist.
-    Text-only path: parse caption → persist (no R2, no CLIP, no dedup)."""
+    """Full pipeline. Handles both Telegram and WhatsApp payloads.
+
+    Image path: validate → upload → embed → dedup → persist.
+    Text-only path: parse caption → persist (no R2, no CLIP, no dedup).
+    """
     from app.core.clip import embed_image
     from app.models.ingestion_log import IngestionLog
     from app.models.product import Product
 
-    chat_id: int = payload["chat_id"]
-    msg_id: int = payload["message_id"]
+    source_platform: str = payload.get("source_platform", "telegram")
+    chat_id: str = str(payload["chat_id"])
+    msg_id: str = str(payload["message_id"])
     caption: str = payload.get("caption", "")
-    sender_id: int | None = payload.get("sender_id")
-    has_image: bool = payload.get("has_image", payload.get("image_b64") is not None)
-    received_at = (
-        datetime.fromisoformat(payload["date"]).astimezone(UTC).replace(tzinfo=None)
-        if payload.get("date")
-        else datetime.utcnow()
-    )
+    sender_id = payload.get("sender_id")
 
-    log.info("processing_start", chat_id=chat_id, msg_id=msg_id, has_image=has_image)
+    # Normalise image field: WhatsApp uses "image_data_b64", Telegram uses "image_b64"
+    image_b64: str | None = payload.get("image_data_b64") or payload.get("image_b64")
+    has_image: bool = payload.get("has_image", image_b64 is not None)
+
+    # Normalise timestamp: WhatsApp uses "received_at", Telegram uses "date"
+    raw_ts = payload.get("received_at") or payload.get("date")
+    if raw_ts:
+        received_at = datetime.fromisoformat(
+            raw_ts.replace("Z", "+00:00")
+        ).astimezone(UTC).replace(tzinfo=None)
+    else:
+        received_at = datetime.utcnow()
+
+    log.info(
+        "processing_start",
+        platform=source_platform,
+        chat_id=chat_id,
+        msg_id=msg_id,
+        has_image=has_image,
+    )
 
     price = _extract_price(caption) if caption else None
     name = _extract_name(caption) if caption else None
@@ -185,8 +230,13 @@ async def process_message(payload: dict) -> None:
     vector: list[float] | None = None
 
     if has_image:
+        if not image_b64:
+            log.warning("image_missing_b64", chat_id=chat_id, msg_id=msg_id)
+            await _write_log(chat_id, msg_id, "failed", "image_b64 missing in payload")
+            return
+
         try:
-            image_bytes = base64.b64decode(payload["image_b64"])
+            image_bytes = base64.b64decode(image_b64)
         except Exception as exc:
             log.error("image_decode_failed", chat_id=chat_id, msg_id=msg_id, error=str(exc))
             await _write_log(chat_id, msg_id, "failed", f"image decode error: {exc}")
@@ -214,14 +264,15 @@ async def process_message(payload: dict) -> None:
     async with AsyncSessionLocal() as session:
         wholesaler_id = await _get_wholesaler_id(
             session,
+            source_platform,
             sender_id,
             sender_username=payload.get("sender_username"),
             sender_name=payload.get("sender_name"),
-            chat_title=payload.get("chat_title"),
+            chat_title=payload.get("chat_title") or payload.get("chat_name"),
         )
 
     if vector is not None and wholesaler_id is not None:
-        is_dup = await _check_duplicate(vector, wholesaler_id)
+        is_dup = await _check_duplicate(vector, wholesaler_id, source_platform)
         if is_dup:
             log.info("duplicate_detected", chat_id=chat_id, msg_id=msg_id)
             await _write_log(chat_id, msg_id, "duplicate", "similarity threshold exceeded")
@@ -237,12 +288,13 @@ async def process_message(payload: dict) -> None:
                 qdrant_id=qdrant_id,
                 wholesaler_id=wholesaler_id,
                 chat_id=chat_id,
-                telegram_msg_id=msg_id,
+                message_id=msg_id,
                 name=name,
                 raw_caption=caption or None,
                 price=price,
                 image_url=image_url,
                 image_key=image_key,
+                source_platform=source_platform,
                 received_at=received_at,
             )
             session.add(product)
@@ -261,8 +313,9 @@ async def process_message(payload: dict) -> None:
                             payload={
                                 "product_id": str(product_id),
                                 "wholesaler_id": str(wholesaler_id) if wholesaler_id else None,
+                                "source_platform": source_platform,
                                 "price": price,
-                                "chat_name": payload.get("chat_title", ""),
+                                "chat_name": payload.get("chat_title") or payload.get("chat_name", ""),
                                 "received_at": received_at.timestamp(),
                                 "status": "active",
                             },
@@ -272,13 +325,18 @@ async def process_message(payload: dict) -> None:
 
             log_entry = IngestionLog(
                 chat_id=chat_id,
-                telegram_msg_id=msg_id,
+                message_id=msg_id,
                 status="processed",
                 product_id=product_id,
             )
             session.add(log_entry)
             await session.commit()
-            log.info("product_persisted", product_id=str(product_id), has_image=has_image)
+            log.info(
+                "product_persisted",
+                product_id=str(product_id),
+                platform=source_platform,
+                has_image=has_image,
+            )
 
         except Exception as exc:
             await session.rollback()
@@ -298,14 +356,14 @@ async def process_message(payload: dict) -> None:
             raise ProcessingError(str(exc)) from exc
 
 
-async def _write_log(chat_id: int, msg_id: int, status: str, reason: str | None = None) -> None:
+async def _write_log(chat_id: str, msg_id: str, status: str, reason: str | None = None) -> None:
     from app.models.ingestion_log import IngestionLog
 
     async with AsyncSessionLocal() as session:
         session.add(
             IngestionLog(
                 chat_id=chat_id,
-                telegram_msg_id=msg_id,
+                message_id=msg_id,
                 status=status,
                 reason=reason,
             )

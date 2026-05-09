@@ -15,6 +15,7 @@ class Wholesaler(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     telegram_id: Mapped[int | None] = mapped_column(BigInteger, unique=True, nullable=True)
     telegram_username: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    wa_jid: Mapped[str | None] = mapped_column(String(100), unique=True, nullable=True)
     phone: Mapped[str | None] = mapped_column(String(20), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())

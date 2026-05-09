@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import BigInteger, ForeignKey, String, Text, func
+from sqlalchemy import ForeignKey, String, Text, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -12,8 +12,8 @@ class IngestionLog(Base):
     __tablename__ = "ingestion_logs"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    telegram_msg_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    chat_id: Mapped[str] = mapped_column(Text, nullable=False)
+    message_id: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(
         String(20), nullable=False
     )  # processed|skipped|failed|duplicate

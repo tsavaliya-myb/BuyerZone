@@ -51,11 +51,14 @@ async def load_whitelist_from_db() -> None:
 
     async with AsyncSessionLocal() as session:
         result = await session.execute(
-            select(MonitoredChat).where(MonitoredChat.is_active.is_(True))
+            select(MonitoredChat).where(
+                MonitoredChat.is_active.is_(True),
+                MonitoredChat.platform == "telegram",
+            )
         )
         chats = result.scalars().all()
 
-    new_whitelist = {chat.chat_id: chat.chat_name for chat in chats}
+    new_whitelist = {int(chat.chat_id): chat.chat_name for chat in chats}
 
     # Atomic reference swap — readers see either the old dict or the new dict,
     # never a half-populated state. CPython guarantees module-attribute

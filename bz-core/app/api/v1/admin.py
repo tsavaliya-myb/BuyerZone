@@ -73,16 +73,22 @@ async def add_chat(
             detail=f"Chat '{body.chat_name}' not found in joined dialogs",
         )
 
+    chat_id_str = str(match["chat_id"])
+
     # Check if already monitored
     existing = await db.execute(
-        select(MonitoredChat).where(MonitoredChat.chat_id == match["chat_id"])
+        select(MonitoredChat).where(
+            MonitoredChat.chat_id == chat_id_str,
+            MonitoredChat.platform == "telegram",
+        )
     )
     chat = existing.scalar_one_or_none()
     if chat:
         chat.is_active = True
     else:
         chat = MonitoredChat(
-            chat_id=match["chat_id"],
+            chat_id=chat_id_str,
+            platform="telegram",
             chat_name=match["chat_name"],
             chat_type=match["chat_type"],
             added_by=uuid.UUID(admin["sub"]),

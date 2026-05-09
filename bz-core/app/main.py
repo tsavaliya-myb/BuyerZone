@@ -29,6 +29,14 @@ async def lifespan(app: FastAPI):
 
     await load_whitelist_from_db()
 
+    # Pre-warm CLIP model so first search request doesn't pay model-load latency
+    import asyncio
+
+    from app.core.clip import _load as clip_load
+
+    await asyncio.get_running_loop().run_in_executor(None, clip_load)
+    log.info("clip_model_warmed")
+
     log.info("startup_complete")
     yield
 
@@ -67,12 +75,14 @@ def create_app() -> FastAPI:
     from app.api.v1.products import router as products_router
     from app.api.v1.search import router as search_router
     from app.api.v1.telegram_auth import router as telegram_auth_router
+    from app.api.v1.whatsapp_admin import router as whatsapp_admin_router
 
     app.include_router(media_router)  # public, no prefix, no auth
 
     prefix = "/api/v1"
     app.include_router(admin_router, prefix=prefix)
     app.include_router(telegram_auth_router, prefix=prefix)
+    app.include_router(whatsapp_admin_router, prefix=prefix)
     app.include_router(search_router, prefix=prefix)
     app.include_router(products_router, prefix=prefix)
     app.include_router(internal_router, prefix=prefix)

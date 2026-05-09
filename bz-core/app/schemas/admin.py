@@ -23,6 +23,7 @@ class WholesalerCreate(BaseModel):
     name: str
     telegram_id: int | None = None
     telegram_username: str | None = None
+    wa_jid: str | None = None
     phone: str | None = None
 
 
@@ -30,6 +31,7 @@ class WholesalerUpdate(BaseModel):
     name: str | None = None
     telegram_id: int | None = None
     telegram_username: str | None = None
+    wa_jid: str | None = None
     phone: str | None = None
     is_active: bool | None = None
 
@@ -39,6 +41,7 @@ class WholesalerResponse(BaseModel):
     name: str
     telegram_id: int | None
     telegram_username: str | None
+    wa_jid: str | None = None
     phone: str | None
     is_active: bool
     created_at: datetime
@@ -54,7 +57,7 @@ class ChatSearchRequest(BaseModel):
 
 
 class ChatSearchResult(BaseModel):
-    chat_id: int
+    chat_id: str
     chat_name: str
     chat_type: str
     member_count: int | None = None
@@ -66,7 +69,8 @@ class ChatAddRequest(BaseModel):
 
 class MonitoredChatResponse(BaseModel):
     id: uuid.UUID
-    chat_id: int
+    chat_id: str
+    platform: str = "telegram"
     chat_name: str
     chat_type: str
     is_active: bool
@@ -81,8 +85,8 @@ class MonitoredChatResponse(BaseModel):
 
 class IngestionLogResponse(BaseModel):
     id: uuid.UUID
-    chat_id: int
-    telegram_msg_id: int
+    chat_id: str
+    message_id: str
     status: str
     reason: str | None
     product_id: uuid.UUID | None

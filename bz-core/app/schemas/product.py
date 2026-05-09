@@ -9,15 +9,16 @@ class ProductResponse(BaseModel):
     wholesaler_id: uuid.UUID | None
     wholesaler_name: str | None = None
     wholesaler_phone: str | None = None
-    chat_id: int | None
+    chat_id: str | None
     chat_name: str | None = None
-    telegram_msg_id: int
+    message_id: str
     name: str | None
     raw_caption: str | None
     price: float | None
     currency: str
-    image_url: str
+    image_url: str | None
     source_platform: str
+    platform: str | None = None
     status: str
     received_at: datetime
     created_at: datetime

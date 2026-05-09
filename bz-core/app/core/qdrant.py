@@ -52,6 +52,11 @@ async def ensure_collection() -> None:
         field_name="wholesaler_id",
         field_schema=PayloadSchemaType.KEYWORD,
     )
+    await client.create_payload_index(
+        collection_name=settings.qdrant_collection,
+        field_name="source_platform",
+        field_schema=PayloadSchemaType.KEYWORD,
+    )
 
 
 async def close_qdrant_client() -> None:

@@ -27,10 +27,12 @@ class SearchResultItem(BaseModel):
     name: str | None
     price: float | None
     currency: str
-    image_url: str
+    image_url: str | None
     wholesaler_name: str | None
     wholesaler_phone: str | None
     chat_name: str | None
+    platform: str | None
+    raw_caption: str | None
     received_at: datetime
     status: str
 

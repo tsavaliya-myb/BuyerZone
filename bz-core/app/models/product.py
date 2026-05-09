@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import BigInteger, ForeignKey, Index, Numeric, String, Text, func
+from sqlalchemy import ForeignKey, Index, Numeric, String, Text, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -18,10 +18,10 @@ class Product(Base):
     wholesaler_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("wholesalers.id"), nullable=True
     )
-    chat_id: Mapped[int | None] = mapped_column(
-        BigInteger, ForeignKey("monitored_chats.chat_id"), nullable=True
-    )
-    telegram_msg_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    # TEXT — stores Telegram int IDs cast to string, or WhatsApp JIDs like "120363...@g.us"
+    chat_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Renamed from telegram_msg_id — stores Telegram int IDs or WhatsApp message ID strings
+    message_id: Mapped[str] = mapped_column(Text, nullable=False)
     name: Mapped[str | None] = mapped_column(String(500), nullable=True)
     raw_caption: Mapped[str | None] = mapped_column(Text, nullable=True)
     price: Mapped[float | None] = mapped_column(Numeric(10, 2), nullable=True)
@@ -35,7 +35,6 @@ class Product(Base):
     updated_at: Mapped[datetime] = mapped_column(server_default=func.now(), onupdate=func.now())
 
     wholesaler: Mapped["Wholesaler"] = relationship(back_populates="products")  # noqa: F821
-    chat: Mapped["MonitoredChat"] = relationship(back_populates="products")  # noqa: F821
 
     __table_args__ = (
         Index("idx_products_wholesaler", "wholesaler_id"),

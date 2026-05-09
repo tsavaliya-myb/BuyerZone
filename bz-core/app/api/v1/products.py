@@ -2,14 +2,35 @@ import uuid
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, select
+from sqlalchemy import select
+from sqlalchemy import func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.database import get_db
 from app.core.security import require_admin
+from app.models.monitored_chat import MonitoredChat
 from app.models.product import Product
 from app.schemas.product import ProductListResponse, ProductResponse, ProductStatusUpdate
+
+
+async def _load_chats(products, db: AsyncSession) -> dict[str, MonitoredChat]:
+    chat_ids = {p.chat_id for p in products if p.chat_id}
+    if not chat_ids:
+        return {}
+    rows = await db.execute(select(MonitoredChat).where(MonitoredChat.chat_id.in_(chat_ids)))
+    return {c.chat_id: c for c in rows.scalars().all()}
+
+
+def _to_response(product: Product, chats: dict[str, MonitoredChat]) -> ProductResponse:
+    wholesaler = getattr(product, "wholesaler", None)
+    chat = chats.get(product.chat_id) if product.chat_id else None
+    item = ProductResponse.model_validate(product)
+    item.wholesaler_name = wholesaler.name if wholesaler else None
+    item.wholesaler_phone = wholesaler.phone if wholesaler else None
+    item.chat_name = chat.chat_name if chat else None
+    item.platform = chat.platform if chat else product.source_platform
+    return item
 
 router = APIRouter(prefix="/products", tags=["products"])
 
@@ -17,7 +38,7 @@ router = APIRouter(prefix="/products", tags=["products"])
 @router.get("", response_model=ProductListResponse)
 async def list_products(
     wholesaler_id: uuid.UUID | None = Query(None),
-    chat_id: int | None = Query(None),
+    chat_id: str | None = Query(None),
     status: str | None = Query("active"),
     date_from: datetime | None = Query(None),
     date_to: datetime | None = Query(None),
@@ -28,7 +49,7 @@ async def list_products(
 ):
     q = (
         select(Product)
-        .options(selectinload(Product.wholesaler), selectinload(Product.chat))
+        .options(selectinload(Product.wholesaler))
         .order_by(Product.received_at.desc())
     )
     if wholesaler_id:
@@ -49,15 +70,8 @@ async def list_products(
     result = await db.execute(q)
     products = result.scalars().all()
 
-    items = []
-    for p in products:
-        item = ProductResponse.model_validate(p)
-        if p.wholesaler:
-            item.wholesaler_name = p.wholesaler.name
-            item.wholesaler_phone = p.wholesaler.phone
-        if p.chat:
-            item.chat_name = p.chat.chat_name
-        items.append(item)
+    chats = await _load_chats(products, db)
+    items = [_to_response(p, chats) for p in products]
 
     return ProductListResponse(
         items=items,
@@ -76,20 +90,15 @@ async def get_product(
 ):
     result = await db.execute(
         select(Product)
-        .options(selectinload(Product.wholesaler), selectinload(Product.chat))
+        .options(selectinload(Product.wholesaler))
         .where(Product.id == product_id)
     )
     product = result.scalar_one_or_none()
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
 
-    item = ProductResponse.model_validate(product)
-    if product.wholesaler:
-        item.wholesaler_name = product.wholesaler.name
-        item.wholesaler_phone = product.wholesaler.phone
-    if product.chat:
-        item.chat_name = product.chat.chat_name
-    return item
+    chats = await _load_chats([product], db)
+    return _to_response(product, chats)
 
 
 @router.patch("/{product_id}/status", response_model=ProductResponse)
@@ -123,4 +132,5 @@ async def update_product_status(
 
     await db.commit()
     await db.refresh(product)
-    return ProductResponse.model_validate(product)
+    chats = await _load_chats([product], db)
+    return _to_response(product, chats)

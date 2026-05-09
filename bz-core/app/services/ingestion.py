@@ -17,7 +17,6 @@ import os
 import re
 import secrets
 import signal
-import threading
 from datetime import UTC
 
 import structlog
@@ -87,15 +86,23 @@ internal_app = FastAPI(
 async def dialog_search(name: str):
     if pyrogram_client is None:
         return JSONResponse({"error": "no_active_session"}, status_code=503)
-    return await search_dialogs(pyrogram_client, name)
+    try:
+        return await search_dialogs(pyrogram_client, name)
+    except Exception as exc:
+        log.error("dialog_search_error", error=str(exc))
+        return JSONResponse({"error": str(exc)}, status_code=500)
 
 
 @internal_app.get("/dialogs/resolve")
 async def dialog_resolve(name: str):
     if pyrogram_client is None:
         return JSONResponse({"error": "no_active_session"}, status_code=503)
-    result = await resolve_dialog_by_exact_name(pyrogram_client, name)
-    return result or {}
+    try:
+        result = await resolve_dialog_by_exact_name(pyrogram_client, name)
+        return result or {}
+    except Exception as exc:
+        log.error("dialog_resolve_error", error=str(exc))
+        return JSONResponse({"error": str(exc)}, status_code=500)
 
 
 @internal_app.get("/health")
@@ -426,9 +433,10 @@ async def _get_last_logged_msg_id(chat_id: int) -> int | None:
 
     async with AsyncSessionLocal() as session:
         result = await session.execute(
-            select(func.max(IngestionLog.telegram_msg_id)).where(IngestionLog.chat_id == chat_id)
+            select(func.max(IngestionLog.message_id)).where(IngestionLog.chat_id == str(chat_id))
         )
-        return result.scalar_one_or_none()
+        val = result.scalar_one_or_none()
+        return int(val) if val is not None else None
 
 
 async def _enqueue_from_history(client: Client, message, chat_title: str) -> bool:
@@ -549,26 +557,14 @@ async def _load_active_session_string() -> str | None:
         return q.scalar_one_or_none()
 
 
-def _build_client(session_string: str | None) -> Client:
-    if session_string:
-        return Client(
-            name="buyerzone_db",
-            api_id=settings.telegram_api_id,
-            api_hash=settings.telegram_api_hash,
-            session_string=session_string,
-            in_memory=True,
-        )
-    # Backward-compat: file-based session under sessions/.
+def _build_client(session_string: str) -> Client:
     return Client(
-        name=settings.telegram_session_name,
+        name="buyerzone_db",
         api_id=settings.telegram_api_id,
         api_hash=settings.telegram_api_hash,
-        workdir="sessions",
+        session_string=session_string,
+        in_memory=True,
     )
-
-
-def _file_session_exists() -> bool:
-    return os.path.exists(os.path.join("sessions", f"{settings.telegram_session_name}.session"))
 
 
 # ── Entrypoint ────────────────────────────────────────────────────────────────
@@ -587,10 +583,10 @@ async def main() -> None:
         log_level="warning",
     )
     server = uvicorn.Server(config)
-    threading.Thread(target=server.run, daemon=True).start()
+    asyncio.create_task(server.serve())
 
     session_string = await _load_active_session_string()
-    if not session_string and not _file_session_exists():
+    if not session_string:
         log.warning(
             "no_telegram_session_available — internal API up; "
             "authenticate via /api/v1/admin/telegram/auth/send-code"
