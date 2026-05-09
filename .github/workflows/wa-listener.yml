@@ -32,11 +32,11 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Type-check
-        run: npm run typecheck
-
-      - name: Lint
-        run: npm run lint
+      # Uncomment once package.json defines these scripts
+      # - name: Type-check
+      #   run: npm run typecheck
+      # - name: Lint
+      #   run: npm run lint
 
   deploy:
     name: Deploy to VPS
