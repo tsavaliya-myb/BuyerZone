@@ -39,9 +39,6 @@ RUN mkdir -p /app/.cache \
 # Copy application source
 COPY . .
 
-# Ensure sessions dir exists and everything is owned by app user
-RUN mkdir -p /app/sessions && chown -R app:app /app
-
 USER app
 
 EXPOSE 8000

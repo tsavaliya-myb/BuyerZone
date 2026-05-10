@@ -5,7 +5,7 @@ services:
       context: ../bz-core
       dockerfile: Dockerfile
     image: bz-core:local
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
+    command: gunicorn app.main:app -k uvicorn.workers.UvicornWorker -c /app/gunicorn_conf.py -w 4 -b 0.0.0.0:8000 --timeout 60 --graceful-timeout 30
     env_file: ../bz-core/.env
     ports:
       - "127.0.0.1:8000:8000"   # Only exposed to localhost — Nginx proxies externally
