@@ -67,6 +67,7 @@ services:
     restart: always
     env_file: ../bz-core/.env
     environment:
+      NODE_ENV: production
       WA_INTERNAL_PORT: "3001"
       FASTAPI_INTERNAL_URL: "http://api:8000"
     expose:
