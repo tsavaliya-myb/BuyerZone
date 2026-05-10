@@ -195,6 +195,9 @@ jobs:
             # Compose files now live in infra/
             cd infra
 
+            # Ensure .env symlink exists for compose variable substitution
+            [ -L .env ] || ln -s ../bz-core/.env .env
+
             # Build image locally on VPS
             echo "Building image..."
             docker compose -f docker-compose.prod.yml build api
@@ -207,7 +210,7 @@ jobs:
             echo "Restarting api, worker, ingestion..."
             docker compose -f docker-compose.prod.yml up -d \
               --no-deps --remove-orphans \
-              api worker ingestion
+              api worker ingestion wa_listener
 
             # Health check with retry
             echo "Waiting for API to become healthy..."
