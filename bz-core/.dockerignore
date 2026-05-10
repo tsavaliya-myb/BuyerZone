@@ -1,0 +1,30 @@
+# Secrets — never bake into images
+.env
+.env.*
+!.env.example
+
+# Pyrogram session files — host-mounted at runtime
+sessions/
+
+# Python build artefacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtualenvs
+.venv/
+venv/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+
+# Git
+.git/
+.gitignore
