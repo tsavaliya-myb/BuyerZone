@@ -1,6 +1,5 @@
 import asyncio
 import base64
-from functools import partial
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -80,4 +79,6 @@ async def search_combined(
     if not image_vector and not text_vector:
         raise HTTPException(status_code=400, detail="Provide at least image or text")
 
-    return await search_svc.search_combined(image_vector, text_vector, image_weight, top_k, db, text_query=text)
+    return await search_svc.search_combined(
+        image_vector, text_vector, image_weight, top_k, db, text_query=text
+    )

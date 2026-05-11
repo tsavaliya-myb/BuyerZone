@@ -8,7 +8,7 @@ from datetime import datetime
 
 import httpx
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -22,7 +22,6 @@ from app.schemas.whatsapp_admin import (
     WAChatAddRequest,
     WAChatResolveRequest,
     WAChatResponse,
-    WAChatResult,
     WAPairRequest,
     WAPairResponse,
     WASessionUpdateRequest,
@@ -179,9 +178,7 @@ async def add_chat(
     if chat_type == "wa_channel":
         await wa.subscribe_newsletter(jid)
 
-    count_result = await db.execute(
-        select(func.count(Product.id)).where(Product.chat_id == jid)
-    )
+    count_result = await db.execute(select(func.count(Product.id)).where(Product.chat_id == jid))
     count = count_result.scalar_one()
 
     return WAChatResponse(

@@ -85,9 +85,7 @@ async def _get_wholesaler_id(
 
     if source_platform == "whatsapp":
         wa_jid = str(sender_id)
-        result = await session.execute(
-            select(Wholesaler.id).where(Wholesaler.wa_jid == wa_jid)
-        )
+        result = await session.execute(select(Wholesaler.id).where(Wholesaler.wa_jid == wa_jid))
         wid = result.scalar_one_or_none()
         if wid is not None:
             return wid
@@ -106,16 +104,12 @@ async def _get_wholesaler_id(
             log.info("wholesaler_auto_created", wa_jid=wa_jid, wholesaler_id=str(inserted))
             return inserted
 
-        result = await session.execute(
-            select(Wholesaler.id).where(Wholesaler.wa_jid == wa_jid)
-        )
+        result = await session.execute(select(Wholesaler.id).where(Wholesaler.wa_jid == wa_jid))
         return result.scalar_one_or_none()
 
     # Telegram path
     tg_id = int(sender_id)
-    result = await session.execute(
-        select(Wholesaler.id).where(Wholesaler.telegram_id == tg_id)
-    )
+    result = await session.execute(select(Wholesaler.id).where(Wholesaler.telegram_id == tg_id))
     wid = result.scalar_one_or_none()
     if wid is not None:
         return wid
@@ -148,9 +142,7 @@ async def _get_wholesaler_id(
         )
         return inserted
 
-    result = await session.execute(
-        select(Wholesaler.id).where(Wholesaler.telegram_id == tg_id)
-    )
+    result = await session.execute(select(Wholesaler.id).where(Wholesaler.telegram_id == tg_id))
     return result.scalar_one_or_none()
 
 
@@ -208,9 +200,11 @@ async def process_message(payload: dict) -> None:
     # Normalise timestamp: WhatsApp uses "received_at", Telegram uses "date"
     raw_ts = payload.get("received_at") or payload.get("date")
     if raw_ts:
-        received_at = datetime.fromisoformat(
-            raw_ts.replace("Z", "+00:00")
-        ).astimezone(UTC).replace(tzinfo=None)
+        received_at = (
+            datetime.fromisoformat(raw_ts.replace("Z", "+00:00"))
+            .astimezone(UTC)
+            .replace(tzinfo=None)
+        )
     else:
         received_at = datetime.utcnow()
 
@@ -315,7 +309,8 @@ async def process_message(payload: dict) -> None:
                                 "wholesaler_id": str(wholesaler_id) if wholesaler_id else None,
                                 "source_platform": source_platform,
                                 "price": price,
-                                "chat_name": payload.get("chat_title") or payload.get("chat_name", ""),
+                                "chat_name": payload.get("chat_title")
+                                or payload.get("chat_name", ""),
                                 "received_at": received_at.timestamp(),
                                 "status": "active",
                             },

@@ -134,7 +134,7 @@ async def search_combined(
 
     # Merge: give qdrant hits their vector score; add keyword-only hits with text_weight
     merged: dict[str, float] = {}
-    for qdrant_id, pid in zip(sorted_qdrant_ids, product_ids_from_qdrant):
+    for qdrant_id, pid in zip(sorted_qdrant_ids, product_ids_from_qdrant, strict=False):
         if pid:
             merged[pid] = scores[qdrant_id]
     for pid, kw_score in keyword_scores.items():
@@ -180,9 +180,7 @@ async def _enrich(qdrant_results, db: AsyncSession) -> list[SearchResultItem]:
     }
 
     result = await db.execute(
-        select(Product)
-        .options(selectinload(Product.wholesaler))
-        .where(Product.id.in_(product_ids))
+        select(Product).options(selectinload(Product.wholesaler)).where(Product.id.in_(product_ids))
     )
     products = {str(p.id): p for p in result.scalars().all()}
     chats = await _load_chats(list(products.values()), db)
@@ -196,15 +194,11 @@ async def _enrich(qdrant_results, db: AsyncSession) -> list[SearchResultItem]:
     return items
 
 
-async def _load_chats(
-    products: list[Product], db: AsyncSession
-) -> dict[str, MonitoredChat]:
+async def _load_chats(products: list[Product], db: AsyncSession) -> dict[str, MonitoredChat]:
     chat_ids = {p.chat_id for p in products if p.chat_id}
     if not chat_ids:
         return {}
-    rows = await db.execute(
-        select(MonitoredChat).where(MonitoredChat.chat_id.in_(chat_ids))
-    )
+    rows = await db.execute(select(MonitoredChat).where(MonitoredChat.chat_id.in_(chat_ids)))
     return {c.chat_id: c for c in rows.scalars().all()}
 
 

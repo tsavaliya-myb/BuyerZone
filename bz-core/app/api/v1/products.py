@@ -2,8 +2,7 @@ import uuid
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select
-from sqlalchemy import func
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -31,6 +30,7 @@ def _to_response(product: Product, chats: dict[str, MonitoredChat]) -> ProductRe
     item.chat_name = chat.chat_name if chat else None
     item.platform = chat.platform if chat else product.source_platform
     return item
+
 
 router = APIRouter(prefix="/products", tags=["products"])
 
@@ -89,9 +89,7 @@ async def get_product(
     _=Depends(require_admin),
 ):
     result = await db.execute(
-        select(Product)
-        .options(selectinload(Product.wholesaler))
-        .where(Product.id == product_id)
+        select(Product).options(selectinload(Product.wholesaler)).where(Product.id == product_id)
     )
     product = result.scalar_one_or_none()
     if not product:

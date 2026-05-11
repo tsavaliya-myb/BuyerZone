@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import io
 import logging
 import os
@@ -77,9 +78,7 @@ LOGIN_TTL_SECONDS = 600
 
 # ── Internal HTTP server ───────────────────────────────────────────────────────
 
-internal_app = FastAPI(
-    title="BuyerZone Ingestion Internal API", docs_url=None, redoc_url=None
-)
+internal_app = FastAPI(title="BuyerZone Ingestion Internal API", docs_url=None, redoc_url=None)
 
 
 @internal_app.get("/dialogs/search")
@@ -244,10 +243,8 @@ async def _drop_login(login_id: str) -> None:
 
 
 async def _safe_disconnect(client: Client) -> None:
-    try:
+    with contextlib.suppress(Exception):
         await client.disconnect()
-    except Exception:
-        pass
 
 
 async def _finalize_login(login_id: str) -> dict:

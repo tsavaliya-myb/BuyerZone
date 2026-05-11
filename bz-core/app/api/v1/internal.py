@@ -15,7 +15,7 @@ from app.models.platform_session import PlatformSession
 from app.models.product import Product
 from app.models.wholesaler import Wholesaler
 from app.schemas.admin import WholesalerResponse
-from app.schemas.product import ProductListResponse, ProductResponse
+from app.schemas.product import ProductListResponse
 
 router = APIRouter(prefix="/internal", tags=["internal"])
 
