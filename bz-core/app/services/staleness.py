@@ -18,7 +18,7 @@ settings = get_settings()
 
 async def run_staleness_check() -> int:
     """Mark active products older than staleness_days as stale. Returns count updated."""
-    cutoff = datetime.now(UTC) - timedelta(days=settings.staleness_days)
+    cutoff = (datetime.now(UTC) - timedelta(days=settings.staleness_days)).replace(tzinfo=None)
 
     async with AsyncSessionLocal() as session:
         result = await session.execute(
