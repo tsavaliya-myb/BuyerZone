@@ -5,7 +5,7 @@ Start with:  python -m app.services.ingestion
 Also exposes an internal HTTP server on port 8001 for dialog
 lookups used by the admin API (no second Pyrogram session needed),
 plus the Telegram authentication state machine driven by the admin UI.
-check CICD github
+check CICD 
 """
 
 from __future__ import annotations
