@@ -279,11 +279,14 @@ async def on_raw(client: Client, update, users, chats):
     from pyrogram.raw.types import Message as RawMessage
     from pyrogram.raw.types import UpdateNewChannelMessage, UpdateNewMessage
 
+    log.info("on_raw_fired", update_type=type(update).__name__)
+
     if not isinstance(update, UpdateNewChannelMessage | UpdateNewMessage):
         return
 
     raw_msg = update.message
     if not isinstance(raw_msg, RawMessage):
+        log.info("on_raw_skip_not_raw_message", msg_type=type(raw_msg).__name__)
         return
 
     peer = getattr(raw_msg, "peer_id", None)
@@ -294,6 +297,14 @@ async def on_raw(client: Client, update, users, chats):
         chat_id = get_peer_id(peer)
     except (ValueError, AttributeError):
         return
+
+    log.info(
+        "on_raw_chat_id",
+        chat_id=chat_id,
+        peer_type=type(peer).__name__,
+        in_whitelist=is_whitelisted(chat_id),
+        whitelist_keys=list(get_whitelist().keys()),
+    )
 
     if not is_whitelisted(chat_id):
         return
