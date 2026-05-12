@@ -284,9 +284,6 @@ async def on_raw(client: Client, update, users, chats):
     if not isinstance(raw_msg, RawMessage):
         return
 
-    if getattr(raw_msg, "reply_to", None) is not None:
-        return
-
     peer = getattr(raw_msg, "peer_id", None)
     if peer is None:
         return
