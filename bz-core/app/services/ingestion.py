@@ -35,6 +35,7 @@ from pyrogram.errors import (
     SessionPasswordNeeded,
 )
 from pyrogram.handlers import RawUpdateHandler
+from pyrogram.utils import get_peer_id
 
 from app.config import get_settings
 from app.core.redis import close_arq_pool, enqueue_message
@@ -289,13 +290,9 @@ async def on_raw(client: Client, update, users, chats):
     if peer is None:
         return
 
-    if hasattr(peer, "channel_id"):
-        chat_id = int(f"-100{peer.channel_id}")
-    elif hasattr(peer, "chat_id"):
-        chat_id = -peer.chat_id
-    elif hasattr(peer, "user_id"):
-        chat_id = peer.user_id
-    else:
+    try:
+        chat_id = get_peer_id(peer)
+    except (ValueError, AttributeError):
         return
 
     if not is_whitelisted(chat_id):
@@ -605,7 +602,10 @@ async def main() -> None:
             dialog_count += 1
         log.info("dialogs_loaded", count=dialog_count)
 
-        asyncio.create_task(_catch_up_missed(client))
+        if settings.catch_up_enabled:
+            asyncio.create_task(_catch_up_missed(client))
+        else:
+            log.info("catch_up_disabled")
         asyncio.create_task(whitelist_refresher())
 
         log.info("ingestion_service_ready")
