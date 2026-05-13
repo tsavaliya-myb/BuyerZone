@@ -116,8 +116,23 @@ async def health():
 
 @internal_app.post("/whitelist/reload")
 async def whitelist_reload():
+    previous = set(get_whitelist().keys())
     await load_whitelist_from_db()
-    return {"status": "ok", "count": len(get_whitelist())}
+    current = set(get_whitelist().keys())
+    new_chat_ids = current - previous
+
+    # Newly-whitelisted chats need their peer/pts state hydrated in Pyrogram's
+    # session, otherwise Telegram won't push UpdateNewChannelMessage events
+    # for them on the live connection — restart would be the only workaround.
+    if new_chat_ids and pyrogram_client is not None:
+        for chat_id in new_chat_ids:
+            try:
+                await pyrogram_client.get_chat(chat_id)
+                log.info("pyrogram_peer_hydrated", chat_id=chat_id)
+            except Exception as exc:
+                log.error("pyrogram_peer_hydrate_failed", chat_id=chat_id, error=str(exc))
+
+    return {"status": "ok", "count": len(current), "newly_subscribed": len(new_chat_ids)}
 
 
 # ── Auth state machine ────────────────────────────────────────────────────────
