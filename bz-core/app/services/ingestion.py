@@ -296,6 +296,10 @@ async def on_raw(client: Client, update, users, chats):
 
     log.info("on_raw_fired", update_type=type(update).__name__)
 
+    print("Update received:", update)
+    print("users received:", users)
+    print("chats received:", chats)
+    
     if not isinstance(update, UpdateNewChannelMessage | UpdateNewMessage):
         return
 
