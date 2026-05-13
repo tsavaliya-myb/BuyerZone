@@ -620,7 +620,16 @@ async def main() -> None:
         return
 
     client = _build_client(session_string)
+    
+    # Pyrogram requires at least one high-level handler (like MessageHandler) to fully
+    # initialize the event processing stream and maintain channel pts states. Without it,
+    # it may drop or ignore UpdateNewChannelMessage events for channels.
+    from pyrogram.handlers import MessageHandler
+    async def dummy_handler(c, m):
+        pass
+
     client.add_handler(RawUpdateHandler(on_raw))
+    client.add_handler(MessageHandler(dummy_handler))
     pyrogram_client = client
 
     async with client:
