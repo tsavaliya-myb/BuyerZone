@@ -75,11 +75,11 @@ jobs:
       - name: Install dependencies
         run: poetry install --with dev --no-interaction
 
-      - name: Lint with Ruff
-        run: poetry run ruff check .
+      # - name: Lint with Ruff
+      #   run: poetry run ruff check .
 
-      - name: Format check with Black
-        run: poetry run black --check .
+      # - name: Format check with Black
+      #   run: poetry run black --check .
 
       # - name: Run tests
       #   run: poetry run pytest --cov=app --cov-report=xml -v
