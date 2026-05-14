@@ -22,7 +22,7 @@ import signal
 from datetime import UTC
 import tempfile
 
-SESSION_DIR = "/tmp/pyrogram_sessions"
+SESSION_DIR = "/data/pyrogram_sessions"
 
 import structlog
 import uvicorn
@@ -245,37 +245,49 @@ async def session_reload():
     asyncio.create_task(_kill_self())
     return {"status": "restarting"}
 
-async def _write_session_file(session_string: str) -> str:
-    """Write session string into a temp SQLite session file Pyrogram can use."""
-    os.makedirs(SESSION_DIR, exist_ok=True)
-    session_path = os.path.join(SESSION_DIR, "buyerzone")
+SESSION_NAME = "buyerzone"
 
-    # Let Pyrogram convert session_string → SQLite file
+
+async def _ensure_session_file(session_string: str) -> None:
+    """Bootstrap SQLite session file from the DB session_string if missing.
+
+    Why: passing session_string to Client uses MemoryStorage, which never
+    persists pts/qts to disk. Copying the auth fields into a FileStorage
+    once lets Pyrogram maintain update state across restarts.
+    """
+    from pathlib import Path
+
+    from pyrogram.storage import FileStorage
+
+    os.makedirs(SESSION_DIR, exist_ok=True)
+    session_file = os.path.join(SESSION_DIR, f"{SESSION_NAME}.session")
+    if os.path.exists(session_file):
+        return
+
     tmp = Client(
-        name=session_path,
+        name=SESSION_NAME,
         api_id=settings.telegram_api_id,
         api_hash=settings.telegram_api_hash,
         session_string=session_string,
+        in_memory=True,
     )
     await tmp.connect()
+    mem = tmp.storage
+    fs = FileStorage(SESSION_NAME, Path(SESSION_DIR))
+    await fs.open()
+    await fs.dc_id(await mem.dc_id())
+    await fs.api_id(await mem.api_id())
+    await fs.test_mode(await mem.test_mode())
+    await fs.auth_key(await mem.auth_key())
+    await fs.user_id(await mem.user_id())
+    await fs.is_bot(await mem.is_bot())
+    await fs.date(0)
+    await fs.save()
+    await fs.close()
     await tmp.disconnect()
-    return session_path
+    log.info("session_file_bootstrapped", path=session_file)
 
 
-async def _read_session_file(session_path: str) -> str | None:
-    """Export current SQLite session back to a string for DB storage."""
-    tmp = Client(
-        name=session_path,
-        api_id=settings.telegram_api_id,
-        api_hash=settings.telegram_api_hash,
-    )
-    try:
-        await tmp.connect()
-        ss = await tmp.export_session_string()
-        return ss
-    finally:
-        await tmp.disconnect()
-        
 async def _kill_self() -> None:
     await asyncio.sleep(0.5)
     os.kill(os.getpid(), signal.SIGTERM)
@@ -628,12 +640,12 @@ async def _load_active_session_string() -> str | None:
         return q.scalar_one_or_none()
 
 
-def _build_client(session_path: str) -> Client:
+def _build_client() -> Client:
     return Client(
-        name=session_path,
+        name=SESSION_NAME,
         api_id=settings.telegram_api_id,
         api_hash=settings.telegram_api_hash,
-        # session_string=session_string,
+        workdir=SESSION_DIR,
     )
 
 
@@ -667,10 +679,8 @@ async def main() -> None:
             await close_arq_pool()
         return
 
-    # Write DB session → SQLite file (Pyrogram will maintain pts from here on)
-    session_path = await _write_session_file(session_string)
-
-    client = _build_client(session_path)
+    await _ensure_session_file(session_string)
+    client = _build_client()
     
     # Pyrogram requires at least one high-level handler (like MessageHandler) to fully
     # initialize the event processing stream and maintain channel pts states. Without it,
