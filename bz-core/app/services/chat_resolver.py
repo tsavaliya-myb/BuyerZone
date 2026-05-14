@@ -99,3 +99,24 @@ async def resolve_dialog_by_exact_name(client: Client, name: str) -> dict | None
                 "member_count": getattr(dialog.chat, "members_count", None),
             }
     return None
+
+async def save_session_and_reload(session_string: str) -> None:
+    """Persists the new Telegram session returned by the ingestion service and
+    triggers a reload so the new session takes effect immediately."""
+    from datetime import datetime, timezone
+
+    from sqlalchemy import update
+
+    from app.core.database import AsyncSessionLocal
+    from app.models.platform_session import PlatformSession
+
+    async with AsyncSessionLocal() as db:
+        await db.execute(
+            update(PlatformSession)
+            .where(
+                PlatformSession.platform == "telegram",
+                PlatformSession.status == "active",
+            )
+            .values(session_data=session_string, updated_at=datetime.now(timezone.utc))
+        )
+        await db.commit()

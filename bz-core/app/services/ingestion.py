@@ -44,6 +44,7 @@ from app.services.chat_resolver import (
     is_whitelisted,
     load_whitelist_from_db,
     resolve_dialog_by_exact_name,
+    save_session_and_reload,
     search_dialogs,
 )
 
@@ -124,14 +125,20 @@ async def whitelist_reload():
     # This acts as a robust fail-safe: if the MTProto stream drops subscription 
     # for an existing channel, periodic re-hydration forces it to resume.
     if current and pyrogram_client is not None:
-        hydrated_count = 0
         for chat_id in current:
             try:
+                # 1. Seed access hash
+                await pyrogram_client.resolve_peer(chat_id)
+                # 2. Seed peer metadata
                 await pyrogram_client.get_chat(chat_id)
-                hydrated_count += 1
+                # 3. Seed pts — fetch enough to guarantee Telegram registers us
+                #    as an active subscriber for this channel's update stream
+                msgs = []
+                async for m in pyrogram_client.get_chat_history(chat_id, limit=5):
+                    msgs.append(m)
+                log.info("peer_seeded", chat_id=chat_id, msgs_fetched=len(msgs))
             except Exception as exc:
                 log.error("pyrogram_peer_hydrate_failed", chat_id=chat_id, error=str(exc))
-        log.info("whitelist_peers_hydrated", count=hydrated_count, total=len(current))
 
     return {"status": "ok", "count": len(current), "newly_subscribed": len(new_chat_ids)}
 
@@ -287,7 +294,10 @@ async def _finalize_login(login_id: str) -> dict:
         "display_name": display_name,
     }
 
-
+async def _save_session_to_db(session_string: str) -> None:
+    await save_session_and_reload(session_string)
+    log.info("session_saved_to_db")
+    
 # ── Pyrogram raw update handler ───────────────────────────────────────────────
 
 
@@ -586,7 +596,6 @@ def _build_client(session_string: str) -> Client:
         api_id=settings.telegram_api_id,
         api_hash=settings.telegram_api_hash,
         session_string=session_string,
-        in_memory=True,
     )
 
 
@@ -646,13 +655,16 @@ async def main() -> None:
         # peer/pts state. Without this, Telegram won't push UpdateNewChannelMessage 
         # events for pre-existing channels after a service restart.
         await whitelist_reload()
-        log.info("startup_peers_hydrated")
+        
+        # Small settle delay — gives Telegram time to register subscriptions
+        await asyncio.sleep(2)
 
         if settings.catch_up_enabled:
             asyncio.create_task(_catch_up_missed(client))
         else:
             log.info("catch_up_disabled")
             
+        # whitelist reload every 10 minutes    
         async def _periodic_whitelist_reload():
             from app.services.chat_resolver import WHITELIST_REFRESH_INTERVAL
             while True:
@@ -664,12 +676,31 @@ async def main() -> None:
                     
         asyncio.create_task(_periodic_whitelist_reload())
 
+        # ── Periodically flush updated session string back to DB ──────────────
+        async def _periodic_session_save():
+            while True:
+                await asyncio.sleep(3600)          # every hour
+                try:
+                    ss = await client.export_session_string()
+                    await _save_session_to_db(ss)
+                except Exception as exc:
+                    log.error("periodic_session_save_failed", error=str(exc))
+
+        asyncio.create_task(_periodic_session_save())
+
         log.info("ingestion_service_ready")
         try:
             from pyrogram import idle
 
             await idle()
         finally:
+            # ── Save final session state before exit ──────────────────────────
+            try:
+                ss = await client.export_session_string()
+                await _save_session_to_db(ss)
+                log.info("session_saved_on_shutdown")
+            except Exception as exc:
+                log.error("session_shutdown_save_failed", error=str(exc))
             await close_arq_pool()
 
 
