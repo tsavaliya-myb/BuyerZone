@@ -45,7 +45,6 @@ from app.services.chat_resolver import (
     load_whitelist_from_db,
     resolve_dialog_by_exact_name,
     search_dialogs,
-    whitelist_refresher,
 )
 
 logging.basicConfig(level=logging.WARNING)
@@ -121,16 +120,18 @@ async def whitelist_reload():
     current = set(get_whitelist().keys())
     new_chat_ids = current - previous
 
-    # Newly-whitelisted chats need their peer/pts state hydrated in Pyrogram's
-    # session, otherwise Telegram won't push UpdateNewChannelMessage events
-    # for them on the live connection — restart would be the only workaround.
-    if new_chat_ids and pyrogram_client is not None:
-        for chat_id in new_chat_ids:
+    # Hydrate peer/pts state for all channels in Pyrogram's session.
+    # This acts as a robust fail-safe: if the MTProto stream drops subscription 
+    # for an existing channel, periodic re-hydration forces it to resume.
+    if current and pyrogram_client is not None:
+        hydrated_count = 0
+        for chat_id in current:
             try:
                 await pyrogram_client.get_chat(chat_id)
-                log.info("pyrogram_peer_hydrated", chat_id=chat_id)
+                hydrated_count += 1
             except Exception as exc:
                 log.error("pyrogram_peer_hydrate_failed", chat_id=chat_id, error=str(exc))
+        log.info("whitelist_peers_hydrated", count=hydrated_count, total=len(current))
 
     return {"status": "ok", "count": len(current), "newly_subscribed": len(new_chat_ids)}
 
@@ -641,11 +642,27 @@ async def main() -> None:
             dialog_count += 1
         log.info("dialogs_loaded", count=dialog_count)
 
+        # Hydrate all whitelisted chats so Pyrogram's in-memory session maintains their
+        # peer/pts state. Without this, Telegram won't push UpdateNewChannelMessage 
+        # events for pre-existing channels after a service restart.
+        await whitelist_reload()
+        log.info("startup_peers_hydrated")
+
         if settings.catch_up_enabled:
             asyncio.create_task(_catch_up_missed(client))
         else:
             log.info("catch_up_disabled")
-        asyncio.create_task(whitelist_refresher())
+            
+        async def _periodic_whitelist_reload():
+            from app.services.chat_resolver import WHITELIST_REFRESH_INTERVAL
+            while True:
+                await asyncio.sleep(WHITELIST_REFRESH_INTERVAL)
+                try:
+                    await whitelist_reload()
+                except Exception as exc:
+                    log.error("periodic_whitelist_reload_failed", error=str(exc))
+                    
+        asyncio.create_task(_periodic_whitelist_reload())
 
         log.info("ingestion_service_ready")
         try:
