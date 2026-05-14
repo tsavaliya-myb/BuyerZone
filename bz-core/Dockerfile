@@ -39,6 +39,10 @@ RUN mkdir -p /app/.cache \
 # Copy application source
 COPY . .
 
+# Pre-create Pyrogram session dir owned by app so the named volume mount
+# (which inherits this ownership) is writable by the non-root runtime user.
+RUN mkdir -p /data/pyrogram_sessions && chown -R app:app /data
+
 USER app
 
 EXPOSE 8000
