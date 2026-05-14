@@ -20,6 +20,9 @@ import re
 import secrets
 import signal
 from datetime import UTC
+import tempfile
+
+SESSION_DIR = "/tmp/pyrogram_sessions"
 
 import structlog
 import uvicorn
@@ -242,7 +245,37 @@ async def session_reload():
     asyncio.create_task(_kill_self())
     return {"status": "restarting"}
 
+async def _write_session_file(session_string: str) -> str:
+    """Write session string into a temp SQLite session file Pyrogram can use."""
+    os.makedirs(SESSION_DIR, exist_ok=True)
+    session_path = os.path.join(SESSION_DIR, "buyerzone")
 
+    # Let Pyrogram convert session_string → SQLite file
+    tmp = Client(
+        name=session_path,
+        api_id=settings.telegram_api_id,
+        api_hash=settings.telegram_api_hash,
+        session_string=session_string,
+    )
+    await tmp.connect()
+    await tmp.disconnect()
+    return session_path
+
+
+async def _read_session_file(session_path: str) -> str | None:
+    """Export current SQLite session back to a string for DB storage."""
+    tmp = Client(
+        name=session_path,
+        api_id=settings.telegram_api_id,
+        api_hash=settings.telegram_api_hash,
+    )
+    try:
+        await tmp.connect()
+        ss = await tmp.export_session_string()
+        return ss
+    finally:
+        await tmp.disconnect()
+        
 async def _kill_self() -> None:
     await asyncio.sleep(0.5)
     os.kill(os.getpid(), signal.SIGTERM)
@@ -286,6 +319,11 @@ async def _finalize_login(login_id: str) -> dict:
     finally:
         await _safe_disconnect(client)
 
+    # Remove stale session file so next restart rebuilds from new session_string
+    stale = os.path.join(SESSION_DIR, "buyerzone.session")
+    with contextlib.suppress(Exception):
+        os.remove(stale)
+        
     log.info("login_finalized", phone=state["phone"], display_name=display_name)
     return {
         "status": "success",
@@ -592,10 +630,10 @@ async def _load_active_session_string() -> str | None:
 
 def _build_client(session_string: str) -> Client:
     return Client(
-        name="buyerzone_db",
+        name=session_path,
         api_id=settings.telegram_api_id,
         api_hash=settings.telegram_api_hash,
-        session_string=session_string,
+        # session_string=session_string,
     )
 
 
@@ -629,7 +667,10 @@ async def main() -> None:
             await close_arq_pool()
         return
 
-    client = _build_client(session_string)
+    # Write DB session → SQLite file (Pyrogram will maintain pts from here on)
+    session_path = await _write_session_file(session_string)
+
+    client = _build_client(session_path)
     
     # Pyrogram requires at least one high-level handler (like MessageHandler) to fully
     # initialize the event processing stream and maintain channel pts states. Without it,
