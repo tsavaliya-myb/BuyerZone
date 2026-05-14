@@ -628,7 +628,7 @@ async def _load_active_session_string() -> str | None:
         return q.scalar_one_or_none()
 
 
-def _build_client(session_string: str) -> Client:
+def _build_client(session_path: str) -> Client:
     return Client(
         name=session_path,
         api_id=settings.telegram_api_id,
