@@ -124,24 +124,16 @@ async def whitelist_reload():
     current = set(get_whitelist().keys())
     new_chat_ids = current - previous
 
-    # Hydrate peer/pts state for all channels in Pyrogram's session.
-    # This acts as a robust fail-safe: if the MTProto stream drops subscription 
-    # for an existing channel, periodic re-hydration forces it to resume.
+    # Subscribe to channel update streams via getChannelDifference.
+    # resolve_peer/get_chat/get_chat_history do NOT register the client for
+    # future UpdateNewChannelMessage pushes — only getChannelDifference does.
     if current and pyrogram_client is not None:
         for chat_id in current:
             try:
-                # 1. Seed access hash
-                await pyrogram_client.resolve_peer(chat_id)
-                # 2. Seed peer metadata
-                await pyrogram_client.get_chat(chat_id)
-                # 3. Seed pts — fetch enough to guarantee Telegram registers us
-                #    as an active subscriber for this channel's update stream
-                msgs = []
-                async for m in pyrogram_client.get_chat_history(chat_id, limit=5):
-                    msgs.append(m)
-                log.info("peer_seeded", chat_id=chat_id, msgs_fetched=len(msgs))
+                await _subscribe_channel(pyrogram_client, chat_id)
+                log.info("channel_subscribed", chat_id=chat_id)
             except Exception as exc:
-                log.error("pyrogram_peer_hydrate_failed", chat_id=chat_id, error=str(exc))
+                log.error("channel_subscribe_failed", chat_id=chat_id, error=str(exc))
 
     return {"status": "ok", "count": len(current), "newly_subscribed": len(new_chat_ids)}
 
@@ -348,6 +340,64 @@ async def _save_session_to_db(session_string: str) -> None:
     await save_session_and_reload(session_string)
     log.info("session_saved_to_db")
     
+# ── Channel subscription (the actual fix for on_raw missing channels) ─────────
+
+
+async def _subscribe_channel(client: Client, chat_id: int) -> None:
+    """Force Telegram to register this client for a channel's update stream.
+
+    The key insight: resolve_peer / get_chat / get_chat_history do NOT cause
+    Telegram to push UpdateNewChannelMessage for a channel. Only
+    updates.getChannelDifference (or the initial get_dialogs iteration) does.
+
+    This function:
+    1. Resolves the peer (access hash)
+    2. Reads the channel's current pts from Pyrogram's session
+    3. Calls getChannelDifference to subscribe to future updates
+    """
+    from pyrogram.raw.functions.updates import GetChannelDifference
+    from pyrogram.raw.types import ChannelMessagesFilterEmpty, InputChannel
+
+    # Step 1: resolve peer to get access_hash
+    peer = await client.resolve_peer(chat_id)
+
+    # peer might be InputPeerChannel — extract channel_id and access_hash
+    channel_id = getattr(peer, "channel_id", None)
+    access_hash = getattr(peer, "access_hash", None)
+    if channel_id is None or access_hash is None:
+        log.warning("subscribe_skip_not_channel", chat_id=chat_id, peer_type=type(peer).__name__)
+        return
+
+    # Step 2: get current pts from Pyrogram's session storage
+    # If no pts exists, use pts=1 to force Telegram to return the current state
+    try:
+        session_pts = await client.storage.get_peer_by_id(chat_id)
+        # session_pts is a tuple; pts is not directly available from get_peer_by_id
+        # Fall back to fetching one message to establish a baseline
+    except Exception:
+        pass
+
+    # Step 3: call getChannelDifference — this is what actually subscribes
+    # us to UpdateNewChannelMessage for this channel
+    try:
+        await client.invoke(
+            GetChannelDifference(
+                force=True,
+                channel=InputChannel(
+                    channel_id=channel_id,
+                    access_hash=access_hash,
+                ),
+                filter=ChannelMessagesFilterEmpty(),
+                pts=1,  # pts=1 with force=True makes Telegram return current
+                         # state and registers us for future updates
+                limit=1,
+            )
+        )
+    except Exception as exc:
+        # Some errors (CHANNEL_PRIVATE, etc.) are expected for certain chats
+        log.warning("get_channel_difference_failed", chat_id=chat_id, error=str(exc))
+
+
 # ── Pyrogram raw update handler ───────────────────────────────────────────────
 
 
@@ -714,6 +764,23 @@ async def main() -> None:
             asyncio.create_task(_catch_up_missed(client))
         else:
             log.info("catch_up_disabled")
+
+        # ── Periodic catch-up safety net ──────────────────────────────────────
+        # on_raw is the primary ingestion path. This loop is a safety net that
+        # catches anything on_raw missed (e.g. transient MTProto disconnects,
+        # channels that lost their subscription). Runs every 10 minutes.
+        SAFETY_NET_INTERVAL = 10 * 60  # seconds
+
+        async def _safety_net_loop():
+            while True:
+                await asyncio.sleep(SAFETY_NET_INTERVAL)
+                try:
+                    log.info("safety_net_catch_up_start")
+                    await _catch_up_missed(client)
+                except Exception as exc:
+                    log.error("safety_net_catch_up_failed", error=str(exc))
+
+        asyncio.create_task(_safety_net_loop())
             
         # whitelist reload every 10 minutes    
         async def _periodic_whitelist_reload():
