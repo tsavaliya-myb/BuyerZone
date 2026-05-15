@@ -19,19 +19,26 @@ log = structlog.get_logger(__name__)
 settings = get_settings()
 
 # Price extraction — INR only (₹, Rs, optional "price"/"rate" prefix, or bare number followed by /-)
-_PRICE_PREFIX = r"(?:(?:price|rate)\s*[:\-]?\s*)?"
+# NOTE: Use [^\S\n] (whitespace-except-newline) so patterns don't match across lines
+# (prevents phone numbers on the *next* line from being grabbed as prices).
+_SP = r"[^\S\n]"                       # horizontal whitespace only
+_PRICE_PREFIX = rf"(?:(?:price|rate){_SP}*[:\-]?{_SP}*)?"
 _PRICE_RE = re.compile(
-    rf"{_PRICE_PREFIX}(?:₹|Rs\.?\s*)(\d[\d,]*(?:\.\d{{1,2}})?)"
-    rf"|{_PRICE_PREFIX}(\d[\d,]*)\s*/-"
-    rf"|(?:price|rate)\s*[:\-]?\s*(\d[\d,]*(?:\.\d{{1,2}})?)",
+    rf"{_PRICE_PREFIX}(?:₹|Rs\.?{_SP}*)(\d[\d,]*(?:\.\d{{1,2}})?)"
+    rf"|{_PRICE_PREFIX}(\d[\d,]*){_SP}*/-"
+    rf"|(?:price|rate){_SP}*[:\-]?{_SP}*(\d[\d,]*(?:\.\d{{1,2}})?)" ,
     re.IGNORECASE,
 )
 _CLEAN_RE = re.compile(
-    rf"{_PRICE_PREFIX}(?:₹|Rs\.?\s*)\d[\d,]*(?:\.\d{{1,2}})?"
-    rf"|{_PRICE_PREFIX}\d[\d,]*\s*/-"
-    rf"|(?:price|rate)\s*[:\-]?\s*\d[\d,]*(?:\.\d{{1,2}})?",
+    rf"{_PRICE_PREFIX}(?:₹|Rs\.?{_SP}*)\d[\d,]*(?:\.\d{{1,2}})?"
+    rf"|{_PRICE_PREFIX}\d[\d,]*{_SP}*/-"
+    rf"|(?:price|rate){_SP}*[:\-]?{_SP}*\d[\d,]*(?:\.\d{{1,2}})?",
     re.IGNORECASE,
 )
+
+# Maximum plausible product price in INR (₹99,99,999.99 → ~$12k).
+# Anything above this is almost certainly a phone number or junk.
+_MAX_PRICE = 9_999_999.99
 
 
 def _validate_image(data: bytes) -> bool:
@@ -49,9 +56,14 @@ def _extract_price(caption: str) -> float | None:
         return None
     raw = (m.group(1) or m.group(2) or m.group(3)).replace(",", "")
     try:
-        return float(raw)
+        value = float(raw)
     except ValueError:
         return None
+    # Reject values that overflow NUMERIC(10,2) or look like phone numbers
+    if value > _MAX_PRICE or value <= 0:
+        log.debug("price_rejected", raw=raw, value=value, reason="out_of_range")
+        return None
+    return value
 
 
 def _extract_name(caption: str) -> str | None:
