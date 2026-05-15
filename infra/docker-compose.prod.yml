@@ -36,6 +36,8 @@ services:
       qdrant:
         condition: service_started
     restart: unless-stopped
+    deploy:
+      replicas: 3
     mem_limit: 4g
     logging:
       driver: "json-file"
@@ -145,4 +147,4 @@ services:
 volumes:
   postgres_data:
   qdrant_data:
-  redis_data:
+  redis_data:
