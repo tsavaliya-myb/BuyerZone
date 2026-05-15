@@ -769,18 +769,18 @@ async def main() -> None:
         # on_raw is the primary ingestion path. This loop is a safety net that
         # catches anything on_raw missed (e.g. transient MTProto disconnects,
         # channels that lost their subscription). Runs every 10 minutes.
-        SAFETY_NET_INTERVAL = 10 * 60  # seconds
+        # SAFETY_NET_INTERVAL = 10 * 60  # seconds
 
-        async def _safety_net_loop():
-            while True:
-                await asyncio.sleep(SAFETY_NET_INTERVAL)
-                try:
-                    log.info("safety_net_catch_up_start")
-                    await _catch_up_missed(client)
-                except Exception as exc:
-                    log.error("safety_net_catch_up_failed", error=str(exc))
+        # async def _safety_net_loop():
+        #     while True:
+        #         await asyncio.sleep(SAFETY_NET_INTERVAL)
+        #         try:
+        #             log.info("safety_net_catch_up_start")
+        #             await _catch_up_missed(client)
+        #         except Exception as exc:
+        #             log.error("safety_net_catch_up_failed", error=str(exc))
 
-        asyncio.create_task(_safety_net_loop())
+        # asyncio.create_task(_safety_net_loop())
             
         # whitelist reload every 10 minutes    
         async def _periodic_whitelist_reload():
