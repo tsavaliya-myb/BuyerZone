@@ -47,8 +47,6 @@ services:
     image: bz-core:local
     command: python -m app.services.ingestion
     env_file: ../bz-core/.env
-    volumes:
-      - pyrogram_sessions:/data/pyrogram_sessions
     depends_on:
       postgres:
         condition: service_healthy
@@ -147,5 +145,4 @@ services:
 volumes:
   postgres_data:
   qdrant_data:
-  redis_data:
-  pyrogram_sessions:
+  redis_data:

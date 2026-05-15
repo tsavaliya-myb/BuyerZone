@@ -1,15 +1,13 @@
-"""Pyrogram listener — runs as a standalone long-lived process.
-
+"""Pyrogram polling ingestion — runs as a standalone long-lived process.
 Start with:  python -m app.services.ingestion
-
+Polls whitelisted Telegram chats every POLL_INTERVAL seconds to ingest
+new messages. Chats are staggered across the interval to minimise
+Telegram API load and avoid FloodWait.
 Also exposes an internal HTTP server on port 8001 for dialog
 lookups used by the admin API (no second Pyrogram session needed),
-plus the Telegram authentication state machine driven by the admin UI.
-check CICD 
-"""
+plus the Telegram authentication state machine driven by the admin UI."""
 
 from __future__ import annotations
-
 import asyncio
 import base64
 import contextlib
@@ -20,10 +18,6 @@ import re
 import secrets
 import signal
 from datetime import UTC
-import tempfile
-
-SESSION_DIR = "/data/pyrogram_sessions"
-
 import structlog
 import uvicorn
 from fastapi import FastAPI
@@ -37,14 +31,10 @@ from pyrogram.errors import (
     PhoneNumberInvalid,
     SessionPasswordNeeded,
 )
-from pyrogram.handlers import RawUpdateHandler
-from pyrogram.utils import get_peer_id
-
 from app.config import get_settings
 from app.core.redis import close_arq_pool, enqueue_message
 from app.services.chat_resolver import (
     get_whitelist,
-    is_whitelisted,
     load_whitelist_from_db,
     resolve_dialog_by_exact_name,
     save_session_and_reload,
@@ -57,10 +47,9 @@ logging.getLogger("sqlalchemy").setLevel(logging.WARNING)
 logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
 logging.getLogger("sqlalchemy.engine.Engine").setLevel(logging.WARNING)
 logging.getLogger("sqlalchemy.pool").setLevel(logging.WARNING)
-
 log = structlog.get_logger(__name__)
-settings = get_settings()
 
+settings = get_settings()
 OUT_OF_STOCK_PATTERNS = re.compile(
     r"\b(out\s+of\s+stock|stock\s+out|sold\s+out|not\s+available|unavailable|oos|stockout)\b",
     re.IGNORECASE,
@@ -69,7 +58,8 @@ OUT_OF_STOCK_PATTERNS = re.compile(
 MAX_CONCURRENT_DOWNLOADS = 20
 _download_sem = asyncio.Semaphore(MAX_CONCURRENT_DOWNLOADS)
 
-CATCH_UP_FIRST_RUN_HOURS = 24
+FIRST_RUN_MSG_LIMIT = 20  # messages to fetch on first-ever poll (no prior state)
+POLL_INTERVAL = 15 * 60  # seconds between full poll cycles
 
 # Set in main() once we know whether a session is available.
 pyrogram_client: Client | None = None
@@ -80,11 +70,10 @@ pyrogram_client: Client | None = None
 _login_states: dict[str, dict] = {}
 LOGIN_TTL_SECONDS = 600
 
-
 # ── Internal HTTP server ───────────────────────────────────────────────────────
-
-internal_app = FastAPI(title="BuyerZone Ingestion Internal API", docs_url=None, redoc_url=None)
-
+internal_app = FastAPI(
+    title="BuyerZone Ingestion Internal API", docs_url=None, redoc_url=None
+)
 
 @internal_app.get("/dialogs/search")
 async def dialog_search(name: str):
@@ -95,7 +84,6 @@ async def dialog_search(name: str):
     except Exception as exc:
         log.error("dialog_search_error", error=str(exc))
         return JSONResponse({"error": str(exc)}, status_code=500)
-
 
 @internal_app.get("/dialogs/resolve")
 async def dialog_resolve(name: str):
@@ -108,7 +96,6 @@ async def dialog_resolve(name: str):
         log.error("dialog_resolve_error", error=str(exc))
         return JSONResponse({"error": str(exc)}, status_code=500)
 
-
 @internal_app.get("/health")
 async def health():
     return {
@@ -116,44 +103,36 @@ async def health():
         "connected": bool(pyrogram_client and pyrogram_client.is_connected),
     }
 
-
 @internal_app.post("/whitelist/reload")
 async def whitelist_reload():
     previous = set(get_whitelist().keys())
     await load_whitelist_from_db()
     current = set(get_whitelist().keys())
     new_chat_ids = current - previous
-
-    # Subscribe to channel update streams via getChannelDifference.
-    # resolve_peer/get_chat/get_chat_history do NOT register the client for
-    # future UpdateNewChannelMessage pushes — only getChannelDifference does.
-    if current and pyrogram_client is not None:
-        for chat_id in current:
-            try:
-                await _subscribe_channel(pyrogram_client, chat_id)
-                log.info("channel_subscribed", chat_id=chat_id)
-            except Exception as exc:
-                log.error("channel_subscribe_failed", chat_id=chat_id, error=str(exc))
-
-    return {"status": "ok", "count": len(current), "newly_subscribed": len(new_chat_ids)}
-
+    
+    return {
+        "status": "ok",
+        "count": len(current),
+        "newly_subscribed": len(new_chat_ids),
+    }
 
 # ── Auth state machine ────────────────────────────────────────────────────────
-
-
 @internal_app.post("/auth/send-code")
 async def auth_send_code(payload: dict):
     phone = (payload or {}).get("phone", "").strip()
+    
     if not phone.isdigit() or not (7 <= len(phone) <= 15):
         return JSONResponse({"error": "invalid_phone"}, status_code=400)
-
+    
     login_id = secrets.token_hex(16)
+    
     client = Client(
         name=f"login_{login_id}",
         api_id=settings.telegram_api_id,
         api_hash=settings.telegram_api_hash,
         in_memory=True,
     )
+    
     try:
         await client.connect()
         sent = await client.send_code(phone)
@@ -170,7 +149,6 @@ async def auth_send_code(payload: dict):
         await _safe_disconnect(client)
         log.error("auth_send_code_failed", error=str(exc))
         return JSONResponse({"error": "send_code_failed"}, status_code=500)
-
     expire_task = asyncio.create_task(_expire_login(login_id, LOGIN_TTL_SECONDS))
     _login_states[login_id] = {
         "client": client,
@@ -178,18 +156,18 @@ async def auth_send_code(payload: dict):
         "phone_code_hash": sent.phone_code_hash,
         "expire_task": expire_task,
     }
+
     log.info("auth_send_code_ok", login_id=login_id, phone=phone)
     return {"login_id": login_id, "expires_in": LOGIN_TTL_SECONDS}
-
 
 @internal_app.post("/auth/verify-code")
 async def auth_verify_code(payload: dict):
     login_id = (payload or {}).get("login_id")
     code = (payload or {}).get("code", "")
     state = _login_states.get(login_id)
+    
     if not state:
         return JSONResponse({"error": "login_not_found"}, status_code=404)
-
     client: Client = state["client"]
     try:
         await client.sign_in(state["phone"], state["phone_code_hash"], code)
@@ -204,19 +182,19 @@ async def auth_verify_code(payload: dict):
         log.error("auth_verify_code_failed", error=str(exc))
         await _drop_login(login_id)
         return JSONResponse({"error": "verify_code_failed"}, status_code=500)
-
     return await _finalize_login(login_id)
-
 
 @internal_app.post("/auth/verify-password")
 async def auth_verify_password(payload: dict):
     login_id = (payload or {}).get("login_id")
     password = (payload or {}).get("password", "")
     state = _login_states.get(login_id)
+    
     if not state:
         return JSONResponse({"error": "login_not_found"}, status_code=404)
-
+    
     client: Client = state["client"]
+    
     try:
         await client.check_password(password)
     except PasswordHashInvalid:
@@ -225,9 +203,7 @@ async def auth_verify_password(payload: dict):
         log.error("auth_verify_password_failed", error=str(exc))
         await _drop_login(login_id)
         return JSONResponse({"error": "verify_password_failed"}, status_code=500)
-
     return await _finalize_login(login_id)
-
 
 @internal_app.post("/session/reload")
 async def session_reload():
@@ -237,53 +213,9 @@ async def session_reload():
     asyncio.create_task(_kill_self())
     return {"status": "restarting"}
 
-SESSION_NAME = "buyerzone"
-
-
-async def _ensure_session_file(session_string: str) -> None:
-    """Bootstrap SQLite session file from the DB session_string if missing.
-
-    Why: passing session_string to Client uses MemoryStorage, which never
-    persists pts/qts to disk. Copying the auth fields into a FileStorage
-    once lets Pyrogram maintain update state across restarts.
-    """
-    from pathlib import Path
-
-    from pyrogram.storage import FileStorage
-
-    os.makedirs(SESSION_DIR, exist_ok=True)
-    session_file = os.path.join(SESSION_DIR, f"{SESSION_NAME}.session")
-    if os.path.exists(session_file):
-        return
-
-    tmp = Client(
-        name=SESSION_NAME,
-        api_id=settings.telegram_api_id,
-        api_hash=settings.telegram_api_hash,
-        session_string=session_string,
-        in_memory=True,
-    )
-    await tmp.connect()
-    mem = tmp.storage
-    fs = FileStorage(SESSION_NAME, Path(SESSION_DIR))
-    await fs.open()
-    await fs.dc_id(await mem.dc_id())
-    await fs.api_id(await mem.api_id())
-    await fs.test_mode(await mem.test_mode())
-    await fs.auth_key(await mem.auth_key())
-    await fs.user_id(await mem.user_id())
-    await fs.is_bot(await mem.is_bot())
-    await fs.date(0)
-    await fs.save()
-    await fs.close()
-    await tmp.disconnect()
-    log.info("session_file_bootstrapped", path=session_file)
-
-
 async def _kill_self() -> None:
     await asyncio.sleep(0.5)
     os.kill(os.getpid(), signal.SIGTERM)
-
 
 async def _expire_login(login_id: str, delay: int) -> None:
     try:
@@ -295,7 +227,6 @@ async def _expire_login(login_id: str, delay: int) -> None:
         await _safe_disconnect(state["client"])
         log.info("login_expired", login_id=login_id)
 
-
 async def _drop_login(login_id: str) -> None:
     state = _login_states.pop(login_id, None)
     if not state:
@@ -303,16 +234,15 @@ async def _drop_login(login_id: str) -> None:
     state["expire_task"].cancel()
     await _safe_disconnect(state["client"])
 
-
 async def _safe_disconnect(client: Client) -> None:
     with contextlib.suppress(Exception):
         await client.disconnect()
-
 
 async def _finalize_login(login_id: str) -> dict:
     state = _login_states.pop(login_id)
     state["expire_task"].cancel()
     client: Client = state["client"]
+    
     try:
         me = await client.get_me()
         display_name = (
@@ -322,13 +252,9 @@ async def _finalize_login(login_id: str) -> dict:
         session_string = await client.export_session_string()
     finally:
         await _safe_disconnect(client)
-
-    # Remove stale session file so next restart rebuilds from new session_string
-    stale = os.path.join(SESSION_DIR, "buyerzone.session")
-    with contextlib.suppress(Exception):
-        os.remove(stale)
-        
+    
     log.info("login_finalized", phone=state["phone"], display_name=display_name)
+    
     return {
         "status": "success",
         "session_string": session_string,
@@ -336,176 +262,7 @@ async def _finalize_login(login_id: str) -> dict:
         "display_name": display_name,
     }
 
-async def _save_session_to_db(session_string: str) -> None:
-    await save_session_and_reload(session_string)
-    log.info("session_saved_to_db")
-    
-# ── Channel subscription (the actual fix for on_raw missing channels) ─────────
-
-
-async def _subscribe_channel(client: Client, chat_id: int) -> None:
-    """Force Telegram to register this client for a channel's update stream.
-
-    The key insight: resolve_peer / get_chat / get_chat_history do NOT cause
-    Telegram to push UpdateNewChannelMessage for a channel. Only
-    updates.getChannelDifference (or the initial get_dialogs iteration) does.
-
-    This function:
-    1. Resolves the peer (access hash)
-    2. Reads the channel's current pts from Pyrogram's session
-    3. Calls getChannelDifference to subscribe to future updates
-    """
-    from pyrogram.raw.functions.updates import GetChannelDifference
-    from pyrogram.raw.types import ChannelMessagesFilterEmpty, InputChannel
-
-    # Step 1: resolve peer to get access_hash
-    peer = await client.resolve_peer(chat_id)
-
-    # peer might be InputPeerChannel — extract channel_id and access_hash
-    channel_id = getattr(peer, "channel_id", None)
-    access_hash = getattr(peer, "access_hash", None)
-    if channel_id is None or access_hash is None:
-        log.warning("subscribe_skip_not_channel", chat_id=chat_id, peer_type=type(peer).__name__)
-        return
-
-    # Step 2: get current pts from Pyrogram's session storage
-    # If no pts exists, use pts=1 to force Telegram to return the current state
-    try:
-        session_pts = await client.storage.get_peer_by_id(chat_id)
-        # session_pts is a tuple; pts is not directly available from get_peer_by_id
-        # Fall back to fetching one message to establish a baseline
-    except Exception:
-        pass
-
-    # Step 3: call getChannelDifference — this is what actually subscribes
-    # us to UpdateNewChannelMessage for this channel
-    try:
-        await client.invoke(
-            GetChannelDifference(
-                force=True,
-                channel=InputChannel(
-                    channel_id=channel_id,
-                    access_hash=access_hash,
-                ),
-                filter=ChannelMessagesFilterEmpty(),
-                pts=1,  # pts=1 with force=True makes Telegram return current
-                         # state and registers us for future updates
-                limit=1,
-            )
-        )
-    except Exception as exc:
-        # Some errors (CHANNEL_PRIVATE, etc.) are expected for certain chats
-        log.warning("get_channel_difference_failed", chat_id=chat_id, error=str(exc))
-
-
-# ── Pyrogram raw update handler ───────────────────────────────────────────────
-
-
-async def on_raw(client: Client, update, users, chats):
-    from pyrogram.raw.types import Message as RawMessage
-    from pyrogram.raw.types import UpdateNewChannelMessage, UpdateNewMessage
-
-    log.info("on_raw_fired", update_type=type(update).__name__)
-
-    print("Update received:", update)
-    print("users received:", users)
-    print("chats received:", chats)
-    
-    if not isinstance(update, UpdateNewChannelMessage | UpdateNewMessage):
-        return
-
-    raw_msg = update.message
-    if not isinstance(raw_msg, RawMessage):
-        log.info("on_raw_skip_not_raw_message", msg_type=type(raw_msg).__name__)
-        return
-
-    peer = getattr(raw_msg, "peer_id", None)
-    if peer is None:
-        return
-
-    try:
-        chat_id = get_peer_id(peer)
-    except (ValueError, AttributeError):
-        return
-
-    log.info(
-        "on_raw_chat_id",
-        chat_id=chat_id,
-        peer_type=type(peer).__name__,
-        in_whitelist=is_whitelisted(chat_id),
-        whitelist_keys=list(get_whitelist().keys()),
-    )
-
-    if not is_whitelisted(chat_id):
-        return
-
-    msg_id = raw_msg.id
-    caption = (raw_msg.message or "").strip()
-    media = getattr(raw_msg, "media", None)
-    is_photo = media is not None and type(media).__name__ == "MessageMediaPhoto"
-    grouped_id = getattr(raw_msg, "grouped_id", None)
-
-    if is_photo and grouped_id is not None and not caption:
-        return
-    if not is_photo and not caption:
-        return
-    if not is_photo and media is not None:
-        return
-    if caption and OUT_OF_STOCK_PATTERNS.search(caption):
-        return
-
-    chat_title = (
-        chats.get(peer.channel_id).title
-        if hasattr(peer, "channel_id") and peer.channel_id in chats
-        else ""
-    )
-    sender = getattr(raw_msg, "from_id", None)
-    sender_id = getattr(sender, "user_id", None) if sender else None
-    date = raw_msg.date
-
-    sender_username: str | None = None
-    sender_name: str | None = None
-    if sender_id and sender_id in users:
-        u = users[sender_id]
-        sender_username = getattr(u, "username", None)
-        first = getattr(u, "first_name", "") or ""
-        last = getattr(u, "last_name", "") or ""
-        sender_name = (f"{first} {last}".strip()) or None
-
-    log.info(
-        "telegram_message_received",
-        chat_id=chat_id,
-        chat_title=chat_title,
-        peer_type=type(peer).__name__,
-        msg_id=msg_id,
-        grouped_id=grouped_id,
-        is_photo=is_photo,
-        media_type=type(media).__name__ if media else None,
-        caption_len=len(caption),
-        caption_preview=caption[:120] if caption else None,
-        sender_id=sender_id,
-        sender_username=sender_username,
-        sender_name=sender_name,
-        date=date,
-        is_forward=getattr(raw_msg, "fwd_from", None) is not None,
-    )
-
-    asyncio.create_task(
-        _download_and_enqueue(
-            client=client,
-            chat_id=chat_id,
-            msg_id=msg_id,
-            caption=caption,
-            is_photo=is_photo,
-            sender_id=sender_id,
-            sender_username=sender_username,
-            sender_name=sender_name,
-            chat_title=chat_title,
-            date=date,
-        )
-    )
-
-
+# ── Telegram history helpers ─────────────────────────────────────────────────
 async def _download_and_enqueue(
     *,
     client: Client,
@@ -521,7 +278,7 @@ async def _download_and_enqueue(
     bypass_limits: bool = False,
 ) -> None:
     from datetime import datetime
-
+    
     image_b64: str | None = None
     if is_photo:
         async with _download_sem:
@@ -532,9 +289,13 @@ async def _download_and_enqueue(
                     buf.write(chunk)
                 image_b64 = base64.b64encode(buf.getvalue()).decode()
             except Exception as exc:
-                log.error("image_download_failed", chat_id=chat_id, msg_id=msg_id, error=str(exc))
+                log.error(
+                    "image_download_failed",
+                    chat_id=chat_id,
+                    msg_id=msg_id,
+                    error=str(exc),
+                )
                 return
-
     payload = {
         "image_b64": image_b64,
         "has_image": is_photo,
@@ -547,41 +308,59 @@ async def _download_and_enqueue(
         "message_id": msg_id,
         "date": datetime.fromtimestamp(date, tz=UTC).isoformat() if date else None,
     }
-
     try:
         await enqueue_message(payload, bypass_limits=bypass_limits)
         log.info("message_enqueued", chat_id=chat_id, msg_id=msg_id, has_image=is_photo)
     except Exception as exc:
         log.error("enqueue_failed", chat_id=chat_id, msg_id=msg_id, error=str(exc))
 
-
 # ── Startup catch-up ──────────────────────────────────────────────────────────
-
-
 async def _get_last_logged_msg_id(chat_id: int) -> int | None:
     from sqlalchemy import func, select
-
     from app.core.database import AsyncSessionLocal
     from app.models.ingestion_log import IngestionLog
-
     async with AsyncSessionLocal() as session:
         result = await session.execute(
-            select(func.max(IngestionLog.message_id)).where(IngestionLog.chat_id == str(chat_id))
+            select(func.max(IngestionLog.message_id)).where(
+                IngestionLog.chat_id == str(chat_id)
+            )
         )
         val = result.scalar_one_or_none()
         return int(val) if val is not None else None
 
+async def _advance_cursor(chat_id: int, max_msg_id: int) -> None:
+    """Write a 'seen' ingestion_log so the cursor advances past all fetched messages.
+    Only writes if max_msg_id is higher than the current cursor.
+    This prevents re-fetching filtered/skipped messages on the next cycle.
+    """
+    from app.core.database import AsyncSessionLocal
+    from app.models.ingestion_log import IngestionLog
+    
+    current = await _get_last_logged_msg_id(chat_id)
+    if current is not None and max_msg_id <= current:
+        return  # cursor already past this point
+    
+    async with AsyncSessionLocal() as session:
+        session.add(
+            IngestionLog(
+                chat_id=str(chat_id),
+                message_id=str(max_msg_id),
+                status="seen",
+                reason="poll_cursor_advance",
+            )
+        )
+        await session.commit()
 
 async def _enqueue_from_history(client: Client, message, chat_title: str) -> bool:
     if getattr(message, "service", None):
         return False
     if getattr(message, "reply_to_message_id", None):
         return False
-
+    
     caption = (message.caption or message.text or "").strip()
     is_photo = message.photo is not None
     grouped_id = message.media_group_id
-
+    
     if is_photo and grouped_id is not None and not caption:
         return False
     if not is_photo and not caption:
@@ -597,10 +376,10 @@ async def _enqueue_from_history(client: Client, message, chat_title: str) -> boo
         return False
     if caption and OUT_OF_STOCK_PATTERNS.search(caption):
         return False
-
+    
     sender_id = message.from_user.id if message.from_user else None
     date = int(message.date.timestamp()) if message.date else None
-
+    
     await _download_and_enqueue(
         client=client,
         chat_id=message.chat.id,
@@ -614,33 +393,84 @@ async def _enqueue_from_history(client: Client, message, chat_title: str) -> boo
     )
     return True
 
+async def _load_existing_products(chat_id: int) -> set[tuple[str, float | None]]:
+    """Load (raw_caption, price) pairs for active products in one query.
+    Returns a set of tuples for fast O(1) dedup lookup.
+    """
+    from sqlalchemy import select
+    from app.core.database import AsyncSessionLocal
+    from app.models.product import Product
+    
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(Product.raw_caption, Product.price).where(
+                Product.chat_id == str(chat_id),
+                Product.status == "active",
+                Product.raw_caption.isnot(None),
+            )
+        )
+        return {
+            (row[0], float(row[1]) if row[1] is not None else None)
+            for row in result.all()
+        }
+
+async def _resolve_peer(client: Client, chat_id: int) -> bool:
+    """Ensure Pyrogram's internal peer cache has the access_hash for this chat.
+    Without this, get_chat_history() raises 'Peer id invalid' for channels
+    the session hasn't interacted with via get_dialogs() yet.
+    Returns True if the peer was resolved successfully, False otherwise.
+    """
+    try:
+        await client.get_chat(chat_id)
+        return True
+    except Exception as exc:
+        log.warning("peer_resolve_failed", chat_id=chat_id, error=str(exc))
+        return False
+
 
 async def _catch_up_chat(client: Client, chat_id: int, chat_title: str) -> int:
-    from datetime import datetime, timedelta
+    """Fetch new messages from a single chat since the last ingested message.
+    First run (no prior state): fetches only the last FIRST_RUN_MSG_LIMIT messages
+    to avoid flooding the queue on initial deploy.
+    Subsequent runs: walks backwards from newest until it hits last_msg_id.
+    """
+    # Hydrate the peer cache so get_chat_history doesn't fail with "Peer id invalid"
+    if not await _resolve_peer(client, chat_id):
+        log.error("skip_chat_unresolvable", chat_id=chat_id, chat_title=chat_title)
+        return 0
 
     last_msg_id = await _get_last_logged_msg_id(chat_id)
-    cutoff_dt = (
-        datetime.now(UTC) - timedelta(hours=CATCH_UP_FIRST_RUN_HOURS)
-        if last_msg_id is None
-        else None
-    )
-
+    is_first_run = last_msg_id is None
     missed = []
+    limit = FIRST_RUN_MSG_LIMIT if is_first_run else 0  # 0 = no hard limit
+    count = 0
+    
     async for message in client.get_chat_history(chat_id):
         if last_msg_id is not None and message.id <= last_msg_id:
             break
-        if cutoff_dt is not None and message.date:
-            msg_dt = message.date
-            if msg_dt.tzinfo is None:
-                msg_dt = msg_dt.replace(tzinfo=UTC)
-            if msg_dt < cutoff_dt:
-                break
         missed.append(message)
-
+        count += 1
+        if is_first_run and count >= limit:
+            break
     missed.reverse()
+    
+    # Batch dedup: 1 DB query to load existing (caption, price) pairs
+    existing_products = await _load_existing_products(chat_id)
+    from app.services.processing import _extract_price
     enqueued = 0
+    
     for message in missed:
         try:
+            caption = (message.caption or message.text or "").strip()
+            if caption:
+                price = _extract_price(caption)
+                if (caption, price) in existing_products:
+                    log.debug(
+                        "poll_skip_existing_product",
+                        chat_id=chat_id,
+                        msg_id=message.id,
+                    )
+                    continue
             if await _enqueue_from_history(client, message, chat_title):
                 enqueued += 1
         except Exception as exc:
@@ -650,33 +480,54 @@ async def _catch_up_chat(client: Client, chat_id: int, chat_title: str) -> int:
                 msg_id=message.id,
                 error=str(exc),
             )
+    
+    # Advance the cursor to the highest message_id we saw in this batch.
+    # This ensures filtered/skipped messages are never re-fetched.
+    if missed:
+        max_seen_id = missed[-1].id  # list is sorted ascending after reverse
+        await _advance_cursor(chat_id, max_seen_id)
     return enqueued
 
-
-async def _catch_up_missed(client: Client) -> None:
+async def _catch_up(client: Client) -> None:
+    """Poll all whitelisted chats, staggered to avoid Telegram rate limits.
+    Chats are processed sequentially with a gap between each one.
+    If a FloodWait is received, we honour the wait and continue.
+    """
     whitelist = get_whitelist()
-    log.info("catch_up_begin", chats=len(whitelist))
+    n = len(whitelist)
+    if not n:
+        return
+    
+    # Spread chats across 80% of the interval to leave headroom
+    gap = (POLL_INTERVAL * 0.8) / n
+    # Floor at 2s to avoid hammering, cap at 60s so small lists don't wait forever
+    gap = max(2.0, min(gap, 60.0))
+    log.info("poll_cycle_begin", chats=n, gap_seconds=round(gap, 1))
     total = 0
-    for chat_id, chat_title in whitelist.items():
+    
+    for i, (chat_id, chat_title) in enumerate(whitelist.items()):
         try:
             count = await _catch_up_chat(client, chat_id, chat_title)
             total += count
             if count:
-                log.info("catch_up_chat_done", chat_id=chat_id, enqueued=count)
+                log.info("poll_chat_done", chat_id=chat_id, enqueued=count)
+        except FloodWait as fw:
+            wait = getattr(fw, "value", 30)
+            log.warning("poll_flood_wait", chat_id=chat_id, wait_seconds=wait)
+            await asyncio.sleep(wait)
         except Exception as exc:
-            log.error("catch_up_chat_failed", chat_id=chat_id, error=str(exc))
-    log.info("catch_up_complete", total_enqueued=total)
-
+            log.error("poll_chat_failed", chat_id=chat_id, error=str(exc))
+        
+        # Stagger: sleep between chats (skip after last one)
+        if i < n - 1:
+            await asyncio.sleep(gap)
+    log.info("poll_cycle_complete", total_enqueued=total)
 
 # ── Session loading ───────────────────────────────────────────────────────────
-
-
 async def _load_active_session_string() -> str | None:
     from sqlalchemy import select
-
     from app.core.database import AsyncSessionLocal
     from app.models.platform_session import PlatformSession
-
     async with AsyncSessionLocal() as session:
         q = await session.execute(
             select(PlatformSession.session_data)
@@ -689,25 +540,22 @@ async def _load_active_session_string() -> str | None:
         )
         return q.scalar_one_or_none()
 
-
-def _build_client() -> Client:
+def _build_client(session_string: str) -> Client:
     return Client(
-        name=SESSION_NAME,
+        name="buyerzone",
         api_id=settings.telegram_api_id,
         api_hash=settings.telegram_api_hash,
-        workdir=SESSION_DIR,
+        session_string=session_string,
+        in_memory=True,
     )
 
-
 # ── Entrypoint ────────────────────────────────────────────────────────────────
-
-
 async def main() -> None:
     global pyrogram_client
-
+    
     await load_whitelist_from_db()
     log.info("whitelist_contents", chats=get_whitelist())
-
+    
     config = uvicorn.Config(
         internal_app,
         host="0.0.0.0",
@@ -716,7 +564,7 @@ async def main() -> None:
     )
     server = uvicorn.Server(config)
     asyncio.create_task(server.serve())
-
+    
     session_string = await _load_active_session_string()
     if not session_string:
         log.warning(
@@ -728,61 +576,44 @@ async def main() -> None:
         finally:
             await close_arq_pool()
         return
-
-    await _ensure_session_file(session_string)
-    client = _build_client()
     
-    # Pyrogram requires at least one high-level handler (like MessageHandler) to fully
-    # initialize the event processing stream and maintain channel pts states. Without it,
-    # it may drop or ignore UpdateNewChannelMessage events for channels.
-    from pyrogram.handlers import MessageHandler
-    async def dummy_handler(c, m):
-        pass
-
-    client.add_handler(RawUpdateHandler(on_raw))
-    client.add_handler(MessageHandler(dummy_handler))
+    client = _build_client(session_string)
     pyrogram_client = client
-
+    
     async with client:
         me = await client.get_me()
         log.info("pyrogram_me", id=me.id, username=me.username, phone=me.phone_number)
-
+        
+        # Bulk-hydrate Pyrogram's peer cache by walking all dialogs once.
+        # This populates access_hash entries for every joined channel/group
+        # so that get_chat_history() calls never hit "Peer id invalid".
         dialog_count = 0
         async for _ in client.get_dialogs():
             dialog_count += 1
-        log.info("dialogs_loaded", count=dialog_count)
-
-        # Hydrate all whitelisted chats so Pyrogram's in-memory session maintains their
-        # peer/pts state. Without this, Telegram won't push UpdateNewChannelMessage 
-        # events for pre-existing channels after a service restart.
+        log.info("peer_cache_hydrated", dialogs=dialog_count)
+        
+        # Load whitelist into memory
         await whitelist_reload()
         
-        # Small settle delay — gives Telegram time to register subscriptions
-        await asyncio.sleep(2)
+        # ── Polling loop — primary ingestion mechanism ────────────────────────
+        # Runs _catch_up (staggered) on a fixed interval.
+        async def _polling_loop():
+            # Immediate first run to catch up from last known state
+            try:
+                await _catch_up(client)
+            except Exception as exc:
+                log.error("poll_first_run_failed", error=str(exc))
+            while True:
+                await asyncio.sleep(POLL_INTERVAL)
+                try:
+                    # Refresh whitelist before each cycle
+                    await load_whitelist_from_db()
+                    await _catch_up(client)
+                except Exception as exc:
+                    log.error("poll_loop_error", error=str(exc))
+        asyncio.create_task(_polling_loop())
 
-        if settings.catch_up_enabled:
-            asyncio.create_task(_catch_up_missed(client))
-        else:
-            log.info("catch_up_disabled")
-
-        # ── Periodic catch-up safety net ──────────────────────────────────────
-        # on_raw is the primary ingestion path. This loop is a safety net that
-        # catches anything on_raw missed (e.g. transient MTProto disconnects,
-        # channels that lost their subscription). Runs every 10 minutes.
-        # SAFETY_NET_INTERVAL = 10 * 60  # seconds
-
-        # async def _safety_net_loop():
-        #     while True:
-        #         await asyncio.sleep(SAFETY_NET_INTERVAL)
-        #         try:
-        #             log.info("safety_net_catch_up_start")
-        #             await _catch_up_missed(client)
-        #         except Exception as exc:
-        #             log.error("safety_net_catch_up_failed", error=str(exc))
-
-        # asyncio.create_task(_safety_net_loop())
-            
-        # whitelist reload every 10 minutes    
+        # whitelist reload every 10 minutes
         async def _periodic_whitelist_reload():
             from app.services.chat_resolver import WHITELIST_REFRESH_INTERVAL
             while True:
@@ -791,36 +622,14 @@ async def main() -> None:
                     await whitelist_reload()
                 except Exception as exc:
                     log.error("periodic_whitelist_reload_failed", error=str(exc))
-                    
         asyncio.create_task(_periodic_whitelist_reload())
-
-        # ── Periodically flush updated session string back to DB ──────────────
-        async def _periodic_session_save():
-            while True:
-                await asyncio.sleep(3600)          # every hour
-                try:
-                    ss = await client.export_session_string()
-                    await _save_session_to_db(ss)
-                except Exception as exc:
-                    log.error("periodic_session_save_failed", error=str(exc))
-
-        asyncio.create_task(_periodic_session_save())
 
         log.info("ingestion_service_ready")
         try:
             from pyrogram import idle
-
             await idle()
         finally:
-            # ── Save final session state before exit ──────────────────────────
-            try:
-                ss = await client.export_session_string()
-                await _save_session_to_db(ss)
-                log.info("session_saved_on_shutdown")
-            except Exception as exc:
-                log.error("session_shutdown_save_failed", error=str(exc))
             await close_arq_pool()
-
 
 if __name__ == "__main__":
     asyncio.run(main())
