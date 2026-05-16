@@ -24,6 +24,7 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from pyrogram import Client
 from pyrogram.errors import (
+    AuthKeyUnregistered,
     FloodWait,
     PasswordHashInvalid,
     PhoneCodeExpired,
@@ -540,6 +541,26 @@ async def _load_active_session_string() -> str | None:
         )
         return q.scalar_one_or_none()
 
+async def _revoke_active_session() -> None:
+    """Mark the active Telegram session as 'revoked' in the DB.
+    Called when Pyrogram raises AuthKeyUnregistered, meaning the
+    user terminated the session from the Telegram app."""
+    from datetime import datetime
+    from sqlalchemy import update
+    from app.core.database import AsyncSessionLocal
+    from app.models.platform_session import PlatformSession
+    async with AsyncSessionLocal() as session:
+        await session.execute(
+            update(PlatformSession)
+            .where(
+                PlatformSession.platform == "telegram",
+                PlatformSession.status == "active",
+            )
+            .values(status="revoked", updated_at=datetime.utcnow())
+        )
+        await session.commit()
+    log.warning("telegram_session_revoked_in_db")
+
 def _build_client(session_string: str) -> Client:
     return Client(
         name="buyerzone",
@@ -580,54 +601,77 @@ async def main() -> None:
     client = _build_client(session_string)
     pyrogram_client = client
     
-    async with client:
-        me = await client.get_me()
-        log.info("pyrogram_me", id=me.id, username=me.username, phone=me.phone_number)
-        
-        # Bulk-hydrate Pyrogram's peer cache by walking all dialogs once.
-        # This populates access_hash entries for every joined channel/group
-        # so that get_chat_history() calls never hit "Peer id invalid".
-        dialog_count = 0
-        async for _ in client.get_dialogs():
-            dialog_count += 1
-        log.info("peer_cache_hydrated", dialogs=dialog_count)
-        
-        # Load whitelist into memory
-        await whitelist_reload()
-        
-        # ── Polling loop — primary ingestion mechanism ────────────────────────
-        # Runs _catch_up (staggered) on a fixed interval.
-        async def _polling_loop():
-            # Immediate first run to catch up from last known state
-            try:
-                await _catch_up(client)
-            except Exception as exc:
-                log.error("poll_first_run_failed", error=str(exc))
-            while True:
-                await asyncio.sleep(POLL_INTERVAL)
+    try:
+        async with client:
+            me = await client.get_me()
+            log.info("pyrogram_me", id=me.id, username=me.username, phone=me.phone_number)
+            
+            # Bulk-hydrate Pyrogram's peer cache by walking all dialogs once.
+            # This populates access_hash entries for every joined channel/group
+            # so that get_chat_history() calls never hit "Peer id invalid".
+            dialog_count = 0
+            async for _ in client.get_dialogs():
+                dialog_count += 1
+            log.info("peer_cache_hydrated", dialogs=dialog_count)
+            
+            # Load whitelist into memory
+            await whitelist_reload()
+            
+            # ── Polling loop — primary ingestion mechanism ────────────────────────
+            # Runs _catch_up (staggered) on a fixed interval.
+            async def _polling_loop():
+                # Immediate first run to catch up from last known state
                 try:
-                    # Refresh whitelist before each cycle
-                    await load_whitelist_from_db()
                     await _catch_up(client)
+                except AuthKeyUnregistered:
+                    raise  # bubble up to the outer handler
                 except Exception as exc:
-                    log.error("poll_loop_error", error=str(exc))
-        asyncio.create_task(_polling_loop())
+                    log.error("poll_first_run_failed", error=str(exc))
+                while True:
+                    await asyncio.sleep(POLL_INTERVAL)
+                    try:
+                        # Refresh whitelist before each cycle
+                        await load_whitelist_from_db()
+                        await _catch_up(client)
+                    except AuthKeyUnregistered:
+                        raise  # bubble up to the outer handler
+                    except Exception as exc:
+                        log.error("poll_loop_error", error=str(exc))
+            asyncio.create_task(_polling_loop())
 
-        # whitelist reload every 10 minutes
-        async def _periodic_whitelist_reload():
-            from app.services.chat_resolver import WHITELIST_REFRESH_INTERVAL
-            while True:
-                await asyncio.sleep(WHITELIST_REFRESH_INTERVAL)
-                try:
-                    await whitelist_reload()
-                except Exception as exc:
-                    log.error("periodic_whitelist_reload_failed", error=str(exc))
-        asyncio.create_task(_periodic_whitelist_reload())
+            # whitelist reload every 10 minutes
+            async def _periodic_whitelist_reload():
+                from app.services.chat_resolver import WHITELIST_REFRESH_INTERVAL
+                while True:
+                    await asyncio.sleep(WHITELIST_REFRESH_INTERVAL)
+                    try:
+                        await whitelist_reload()
+                    except Exception as exc:
+                        log.error("periodic_whitelist_reload_failed", error=str(exc))
+            asyncio.create_task(_periodic_whitelist_reload())
 
-        log.info("ingestion_service_ready")
+            log.info("ingestion_service_ready")
+            try:
+                from pyrogram import idle
+                await idle()
+            finally:
+                await close_arq_pool()
+    except AuthKeyUnregistered:
+        # User terminated the session from the Telegram app.
+        # Mark it as revoked in the DB and fall into idle mode so
+        # Docker doesn't restart-loop with a dead session string.
+        log.warning(
+            "telegram_session_terminated_by_user — "
+            "marking session as revoked in platform_sessions"
+        )
+        pyrogram_client = None
+        await _revoke_active_session()
+        log.warning(
+            "no_telegram_session_available — session was revoked; "
+            "re-authenticate via /api/v1/admin/telegram/auth/send-code"
+        )
         try:
-            from pyrogram import idle
-            await idle()
+            await asyncio.Event().wait()
         finally:
             await close_arq_pool()
 

@@ -44,6 +44,9 @@ const ctx: ListenerContext = {
   pairCode: null,
 };
 
+/** Consecutive reconnect attempts — drives exponential backoff. */
+let reconnectAttempts = 0;
+
 export function getState(): ListenerState {
   return ctx.state;
 }
@@ -112,6 +115,7 @@ export async function startBot(
       ctx.state = "connected";
       ctx.displayName = sock.user?.name ?? null;
       ctx.phone = sock.user?.id?.split(":")[0] ?? ctx.phone;
+      reconnectAttempts = 0;
       log.info({ phone: ctx.phone, displayName: ctx.displayName }, "wa_connected");
       // Newsletter (channel) messages only stream after subscribing to live
       // updates. Re-subscribe every monitored newsletter on connect.
@@ -126,23 +130,40 @@ export async function startBot(
         // Permanent — do not auto-reconnect
         ctx.state = "requires_repair";
         ctx.sock = null;
+        reconnectAttempts = 0;
         log.warn({ code }, "wa_requires_repair");
+      } else if (code === 440) {
+        // 440 = Connection Replaced — another session with the same
+        // credentials is active (duplicate container, browser WA Web open,
+        // etc.).  Auto-reconnecting creates an infinite kick-loop.
+        // Stop and surface to admin.
+        ctx.state = "requires_repair";
+        ctx.sock = null;
+        reconnectAttempts = 0;
+        log.warn(
+          { code },
+          "wa_connection_replaced — another active session detected. " +
+          "Close other WA Web sessions or stop duplicate containers, then re-pair."
+        );
       } else if (ctx.state === "pair_pending" && code !== 515) {
         // Unexpected disconnect while a pairing code is pending (not the normal
         // 515 "restart required" that WA sends after the user enters the code).
         // The code is now dead — restart fresh so the admin can request a new one.
         ctx.state = "awaiting_pair_code";
         ctx.sock = null;
+        reconnectAttempts = 0;
         log.warn({ code }, "wa_pair_interrupted_restarting");
         setTimeout(() => startBot(null), 3000);
       } else {
-        // Transient — reconnect with current creds.
+        // Transient — reconnect with exponential backoff.
         // 515 (restartRequired) is WA's normal ack after code entry; reconnecting
         // with the current auth state completes the pairing handshake.
         ctx.state = "disconnected";
-        log.info({ code }, "wa_reconnecting");
+        reconnectAttempts++;
+        const backoffMs = Math.min(3000 * Math.pow(2, reconnectAttempts - 1), 60000);
+        log.info({ code, attempt: reconnectAttempts, backoffMs }, "wa_reconnecting");
         const current = serialiseAuthState();
-        setTimeout(() => startBot(current, ctx.phone ?? undefined), 3000);
+        setTimeout(() => startBot(current, ctx.phone ?? undefined), backoffMs);
       }
     }
   });
