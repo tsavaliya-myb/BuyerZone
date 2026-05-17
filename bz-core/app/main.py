@@ -11,6 +11,10 @@ from app.core.exceptions import BuyerzoneError, buyerzone_exception_handler
 from app.core.qdrant import close_qdrant_client, ensure_collection
 from app.core.redis import close_arq_pool, close_redis
 
+from app.core.logging_config import configure_logging
+
+configure_logging()
+
 log = structlog.get_logger(__name__)
 settings = get_settings()
 

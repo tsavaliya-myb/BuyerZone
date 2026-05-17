@@ -48,6 +48,11 @@ logging.getLogger("sqlalchemy").setLevel(logging.WARNING)
 logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
 logging.getLogger("sqlalchemy.engine.Engine").setLevel(logging.WARNING)
 logging.getLogger("sqlalchemy.pool").setLevel(logging.WARNING)
+
+# ── Structlog global configuration ───────────────────────────────────────────
+from app.core.logging_config import configure_logging
+configure_logging()
+
 log = structlog.get_logger(__name__)
 
 settings = get_settings()
@@ -599,10 +604,11 @@ async def main() -> None:
         return
     
     client = _build_client(session_string)
-    pyrogram_client = client
     
     try:
         async with client:
+            # Only expose the client to health checks once the connection succeeds
+            pyrogram_client = client
             me = await client.get_me()
             log.info("pyrogram_me", id=me.id, username=me.username, phone=me.phone_number)
             
@@ -670,6 +676,20 @@ async def main() -> None:
             "no_telegram_session_available — session was revoked; "
             "re-authenticate via /api/v1/admin/telegram/auth/send-code"
         )
+        try:
+            await asyncio.Event().wait()
+        finally:
+            await close_arq_pool()
+    except Exception as exc:
+        # Catch-all for connection failures (network errors, corrupt session, etc.)
+        # Fall into idle mode so the internal API stays up and the operator can
+        # re-authenticate — instead of Docker restart-looping with a bad session.
+        log.error(
+            "pyrogram_connection_failed — falling back to idle mode",
+            error=str(exc),
+            error_type=type(exc).__name__,
+        )
+        pyrogram_client = None
         try:
             await asyncio.Event().wait()
         finally:

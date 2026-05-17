@@ -7,8 +7,11 @@ import structlog
 from arq import cron
 
 from app.config import get_settings
+from app.core.logging_config import configure_logging
 from app.workers.tasks.process_message import process_message
 from app.workers.tasks.staleness_check import staleness_check
+
+configure_logging()
 
 log = structlog.get_logger(__name__)
 settings = get_settings()

@@ -294,5 +294,5 @@ async def session_update(
         )
 
     await db.commit()
-    log.info("wa_session_saved", phone=phone)
+    log.debug("wa_session_saved", phone=phone)
     return {"status": "ok"}
