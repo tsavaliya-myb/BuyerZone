@@ -10,6 +10,7 @@ from app.config import get_settings
 from app.core.logging_config import configure_logging
 from app.workers.tasks.process_message import process_message
 from app.workers.tasks.staleness_check import staleness_check
+from app.workers.tasks.weekly_purge import weekly_purge
 
 configure_logging()
 
@@ -36,6 +37,10 @@ class WorkerSettings:
     cron_jobs = [
         # Run staleness check every day at 02:00 UTC
         cron(staleness_check, hour={2}, minute={0}, name="staleness_check"),
+        # Weekly purge: Saturday 18:30 UTC = Sunday 00:00 IST
+        # Wipes ingestion_logs, products, wholesalers from Postgres,
+        # all points from Qdrant, and all buyerzone:* keys from Redis.
+        cron(weekly_purge, weekday={5}, hour={18}, minute={30}, name="weekly_purge"),
     ]
     on_startup = startup
     redis_settings = settings.arq_redis_settings

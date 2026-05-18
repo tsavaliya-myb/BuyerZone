@@ -67,12 +67,17 @@ class ChatAddRequest(BaseModel):
     chat_name: str  # Exact name as seen in Telegram
 
 
+class ChatUpdateRequest(BaseModel):
+    phone: str | None = None
+
+
 class MonitoredChatResponse(BaseModel):
     id: uuid.UUID
     chat_id: str
     platform: str = "telegram"
     chat_name: str
     chat_type: str
+    phone: str | None = None
     is_active: bool
     added_at: datetime
     product_count: int = 0

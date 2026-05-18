@@ -17,6 +17,7 @@ class MonitoredChat(Base):
     chat_name: Mapped[str] = mapped_column(String(255), nullable=False)
     # chat_type: group|channel|supergroup (Telegram) | wa_group|wa_channel (WhatsApp)
     chat_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    phone: Mapped[str | None] = mapped_column(String(30), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     added_by: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("admin_users.id"), nullable=True

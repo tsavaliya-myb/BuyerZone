@@ -141,6 +141,8 @@ async def add_chat(
     # Determine chat_type from JID suffix
     if jid.endswith("@newsletter") or jid.endswith("@broadcast"):
         chat_type = "wa_channel"
+    elif jid.endswith("@s.whatsapp.net"):
+        chat_type = "wa_contact"
     else:
         chat_type = "wa_group"
 
