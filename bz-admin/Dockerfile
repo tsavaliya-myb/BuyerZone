@@ -7,25 +7,16 @@ RUN npm ci
 
 COPY . .
 
-# VITE_API_URL is baked into the JS bundle at build time.
-# It's always /api/v1 (relative path — the Express server proxies it).
+# Baked into the JS bundle at build time — /api/v1 is a relative path,
+# nginx proxies it to the API container.
 ENV VITE_API_URL=/api/v1
 
 RUN npm run build
 
-# ── Runtime ──────────────────────────────────────────────────────────────────
-FROM node:20-alpine AS runtime
+# ── Runtime — lightweight Nginx to serve static files + proxy API ────────────
+FROM nginx:alpine AS runtime
 
-WORKDIR /app
+COPY --from=builder /app/dist /usr/share/nginx/html
+COPY nginx.conf /etc/nginx/conf.d/default.conf
 
-ENV NODE_ENV=production
-
-COPY package.json package-lock.json* ./
-RUN npm ci --omit=dev
-
-COPY --from=builder /app/dist ./dist
-COPY server.js ./
-
-EXPOSE 10000
-
-CMD ["node", "server.js"]
+EXPOSE 80
