@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - 'bz-core/**'
+      - 'bz-admin/**'
       - '.github/workflows/deploy.yml'
       - 'infra/docker-compose.prod.yml'
   pull_request:
@@ -208,9 +209,13 @@ jobs:
 
             # Rolling restart
             echo "Restarting api, worker, ingestion..."
+            # Build bz_admin image (if changed)
+            echo "Building bz_admin..."
+            docker compose -f docker-compose.prod.yml build bz_admin
+
             docker compose -f docker-compose.prod.yml up -d \
               --no-deps --remove-orphans \
-              api worker ingestion wa_listener
+              api worker ingestion wa_listener bz_admin
 
             # Health check with retry
             echo "Waiting for API to become healthy..."
@@ -224,7 +229,7 @@ jobs:
                 echo "Health check failed — rolling back"
                 git stash
                 docker compose -f docker-compose.prod.yml build api
-                docker compose -f docker-compose.prod.yml up -d --no-deps api worker ingestion
+                docker compose -f docker-compose.prod.yml up -d --no-deps api worker ingestion bz_admin
                 exit 1
               fi
               echo "  Retry $i/5..."

@@ -1,0 +1,96 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --color-primary: #2563eb;
+  --color-primary-light: #eff6ff;
+  --color-primary-dark: #1e40af;
+  
+  --color-sidebar-bg: #f8fafc;
+  --color-sidebar-active: #eff6ff;
+  --color-sidebar-text: #64748b;
+  --color-sidebar-active-text: #2563eb;
+
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+
+  --shadow-card: 0 2px 4px rgba(0, 0, 0, 0.05);
+  --shadow-card-hover: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+}
+
+@layer base {
+  body {
+    @apply font-sans text-slate-800 bg-[#f4f7fe] antialiased overflow-x-hidden;
+  }
+
+  input, select, textarea {
+    @apply text-base!; /* Force 16px to prevent iOS auto-zoom */
+  }
+}
+
+@layer components {
+  .card {
+    @apply bg-white rounded-xl shadow-card transition-all duration-300;
+  }
+  
+  .card-hover {
+    @apply hover:shadow-card-hover hover:-translate-y-1;
+  }
+
+  .btn {
+    @apply inline-flex items-center justify-center px-4 py-2 rounded-lg font-medium transition-all duration-200 active:scale-95;
+  }
+
+  .btn-primary {
+    @apply bg-primary text-white hover:bg-primary-dark;
+  }
+
+  .nav-item {
+    @apply flex items-center gap-3 px-4 py-2 rounded-lg text-sidebar-text font-medium transition-colors hover:text-primary hover:bg-sidebar-active;
+  }
+
+  .nav-item.active {
+    @apply text-primary bg-sidebar-active;
+  }
+
+  .custom-scrollbar::-webkit-scrollbar {
+    @apply w-1.5;
+  }
+
+  .custom-scrollbar::-webkit-scrollbar-track {
+    @apply bg-transparent;
+  }
+
+  .custom-scrollbar::-webkit-scrollbar-thumb {
+    @apply bg-slate-200 rounded-full hover:bg-slate-300;
+  }
+
+  @keyframes scale-in {
+    from {
+      opacity: 0;
+      transform: scale(0.95);
+    }
+    to {
+      opacity: 1;
+      transform: scale(1);
+    }
+  }
+
+  @keyframes slide-in-top {
+    from {
+      opacity: 0;
+      transform: translateY(-20px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  .animate-scale-in {
+    animation: scale-in 0.2s ease-out;
+  }
+
+  .animate-toast-in {
+    animation: slide-in-top 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+}

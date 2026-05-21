@@ -86,6 +86,27 @@ services:
         max-size: "20m"
         max-file: "3"
 
+  bz_admin:
+    build:
+      context: ../bz-admin
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: "10000"
+      VITE_API_TARGET: "http://api:8000"
+    ports:
+      - "10000:10000"              # Directly accessible via http://VPS_IP:10000
+    depends_on:
+      api:
+        condition: service_started
+    mem_limit: 256m
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
   postgres:
     image: postgres:15-alpine
     environment:
