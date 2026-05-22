@@ -99,11 +99,20 @@ export function createApp(): express.Application {
     const q = ((req.query.q as string) ?? "").toLowerCase();
 
     try {
-      const groups = await sock.groupFetchAllParticipating();
+      // Race against a timeout — if Baileys hangs (broken/disconnected session),
+      // we must still send a response or the caller gets a RemoteProtocolError.
+      const TIMEOUT_MS = 12_000;
+      const groups = await Promise.race([
+        sock.groupFetchAllParticipating(),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error("groupFetch timed out")), TIMEOUT_MS)
+        ),
+      ]);
+
       const monitored = getWhitelist();
 
       const results = Object.values(groups)
-        .filter((g: any) => !q || g.subject.toLowerCase().includes(q))
+        .filter((g: any) => !q || g.subject?.toLowerCase().includes(q))
         .map((g: any) => ({
           jid: g.id,
           name: g.subject,
@@ -117,7 +126,10 @@ export function createApp(): express.Application {
       res.json(results);
     } catch (err: any) {
       log.error({ err }, "joined_groups_error");
-      res.status(500).json({ error: err?.message ?? "fetch_failed" });
+      const isTimeout = err?.message?.includes("timed out");
+      res
+        .status(isTimeout ? 504 : 500)
+        .json({ error: err?.message ?? "fetch_failed" });
     }
   });
 
