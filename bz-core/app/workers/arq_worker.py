@@ -37,10 +37,10 @@ class WorkerSettings:
     cron_jobs = [
         # Run staleness check every day at 02:00 UTC
         cron(staleness_check, hour={2}, minute={0}, name="staleness_check"),
-        # Weekly purge: Saturday 18:30 UTC = Sunday 00:00 IST
+        # Weekly purge: Sunday 18:29 UTC = Sunday 23:59 IST
         # Wipes ingestion_logs, products, wholesalers from Postgres,
         # all points from Qdrant, and all buyerzone:* keys from Redis.
-        cron(weekly_purge, weekday={5}, hour={18}, minute={30}, name="weekly_purge"),
+        cron(weekly_purge, weekday={6}, hour={18}, minute={29}, name="weekly_purge"),
     ]
     on_startup = startup
     redis_settings = settings.arq_redis_settings
