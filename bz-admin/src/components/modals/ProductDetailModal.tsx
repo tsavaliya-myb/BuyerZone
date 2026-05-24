@@ -100,7 +100,12 @@ export default function ProductDetailModal() {
           <div className="flex items-center justify-between bg-slate-50 border border-slate-100 rounded-xl p-3 mb-4 shadow-sm">
             <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Wholesale Price</span>
             <div className="text-xl font-black text-primary tracking-tight">
-              {product.price}
+              {typeof product.price === 'number'
+                ? (product.currency === 'INR' ? `${product.price.toLocaleString()} ₹` : `${product.currency || 'INR'} ${product.price.toLocaleString()}`)
+                : (typeof product.price === 'string' && /^\d+(\.\d+)?$/.test(product.price.trim())
+                  ? (product.currency === 'INR' ? `${parseFloat(product.price).toLocaleString()} ₹` : `${product.currency || 'INR'} ${parseFloat(product.price).toLocaleString()}`)
+                  : product.price)
+              }
             </div>
           </div>
 

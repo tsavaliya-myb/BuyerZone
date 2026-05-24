@@ -21,10 +21,45 @@ api.interceptors.response.use(
   (response) => response,
   (error) => {
     const showToast = useUIStore.getState().showToast;
-    
+
     if (error.response) {
       const { status, data } = error.response;
-      const errorMessage = data?.detail || data?.message || data?.error || (typeof data === 'string' ? data : null) || error.message || "An unexpected error occurred";
+      
+      // Safely extract the error message as a string to prevent React rendering crashes
+      let errorMessage = "An unexpected error occurred";
+      if (data) {
+        if (typeof data === "string") {
+          errorMessage = data;
+        } else if (typeof data === "object") {
+          const detail = data.detail;
+          const msg = data.message;
+          const err = data.error;
+
+          if (detail) {
+            if (typeof detail === "string") {
+              errorMessage = detail;
+            } else if (typeof detail === "object") {
+              errorMessage = detail.error || detail.message || JSON.stringify(detail);
+            }
+          } else if (msg && typeof msg === "string") {
+            errorMessage = msg;
+          } else if (err) {
+            if (typeof err === "string") {
+              errorMessage = err;
+            } else if (typeof err === "object") {
+              errorMessage = err.message || err.error || JSON.stringify(err);
+            }
+          } else {
+            try {
+              errorMessage = JSON.stringify(data);
+            } catch {
+              // fallback
+            }
+          }
+        }
+      } else {
+        errorMessage = error.message || "An unexpected error occurred";
+      }
 
       if (status === 401 || status === 403) {
         console.error("Token expired or unauthorized. Redirecting to login...");

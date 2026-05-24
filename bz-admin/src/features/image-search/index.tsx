@@ -58,7 +58,7 @@ export default function ImageSearch() {
       history: [
         {
           date: new Date(result.received_at).toLocaleDateString(),
-          price: `${result.currency} ${result.price}`,
+          price: result.currency === 'INR' ? `${result.price?.toLocaleString() ?? '0'} ₹` : `${result.currency} ${result.price?.toLocaleString() ?? '0'}`,
           status: 'Current',
           isCurrent: true,
         },
@@ -173,7 +173,9 @@ export default function ImageSearch() {
         });
         const scoreLabel = `${Math.round(result.similarity_score * 100)}%`;
         const sellerName = result.chat_name || result.wholesaler_name || 'Unknown Seller';
-        const priceLabel = `${result.currency} ${result.price?.toLocaleString() ?? '0'}`;
+        const priceLabel = result.currency === 'INR'
+          ? `${result.price?.toLocaleString() ?? '0'} ₹`
+          : `${result.currency} ${result.price?.toLocaleString() ?? '0'}`;
 
         return [
           `"${result.image_url || ''}"`,
@@ -506,7 +508,7 @@ export default function ImageSearch() {
                       </div>
                     </td>
                     <td className="px-6 py-4 max-w-[250px]">
-                      <h4 className="font-bold text-slate-800 text-sm leading-snug">{result.name}</h4>
+                      <h4 className="font-bold text-slate-800 text-sm leading-snug line-clamp-2" title={result.name}>{result.name}</h4>
                       <p className="text-[10px] font-medium text-slate-400 mt-0.5 uppercase tracking-wider truncate">
                         ID: {result.product_id.slice(0, 8)}...
                       </p>
@@ -514,7 +516,7 @@ export default function ImageSearch() {
 
                     <td className="px-6 py-4 font-medium text-slate-600 text-sm">{sellerName}</td>
                     <td className="px-6 py-4 text-sm font-bold text-primary">
-                      {result.currency} {result.price?.toLocaleString() ?? '0'}
+                      {result.currency === 'INR' ? `${result.price?.toLocaleString() ?? '0'} ₹` : `${result.currency} ${result.price?.toLocaleString() ?? '0'}`}
                     </td>
                     {/* <td className="px-6 py-4 text-sm text-slate-500 font-medium">
                       {result.wholesaler_phone || 'N/A'}

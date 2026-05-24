@@ -93,13 +93,13 @@ export default function AddSellerModal() {
         await sellersService.addWhatsappSeller({ jid: nameToAdd, chat_name });
       }
       setSuccess(true);
-      
+
       // TRIGGER REFRESH
       if (onSellerAdded) {
         console.log("Triggering refresh callback...");
         onSellerAdded();
       }
-      
+
       // Close after a short delay to show success state
       setTimeout(() => {
         closeAddSellerModal();
@@ -107,7 +107,19 @@ export default function AddSellerModal() {
     } catch (err: any) {
       console.error("Add seller error:", err);
       const data = err.response?.data;
-      const serverMessage = data?.detail || data?.message || data?.error || (typeof data === 'string' ? data : null);
+      let serverMessage: string | null = null;
+      if (data) {
+        if (typeof data === 'string') {
+          serverMessage = data;
+        } else if (typeof data === 'object') {
+          const detail = data.detail;
+          if (detail) {
+            serverMessage = typeof detail === 'string' ? detail : (detail.error || detail.message || JSON.stringify(detail));
+          } else {
+            serverMessage = data.message || data.error || JSON.stringify(data);
+          }
+        }
+      }
       setError(serverMessage || "Failed to add seller. Please try again.");
     } finally {
       setIsAdding(false);
@@ -142,27 +154,25 @@ export default function AddSellerModal() {
 
         {/* Body */}
         <div className="p-8 flex-1 overflow-y-auto custom-scrollbar">
-          
+
           {/* Platform Toggle */}
           <div className="flex bg-slate-100 p-1 rounded-2xl mb-6">
             <button
               onClick={() => handlePlatformChange('telegram')}
-              className={`flex-1 flex items-center justify-center gap-2 py-3 rounded-xl text-sm font-bold transition-all ${
-                platform === 'telegram'
+              className={`flex-1 flex items-center justify-center gap-2 py-3 rounded-xl text-sm font-bold transition-all ${platform === 'telegram'
                   ? 'bg-white text-[#229ED9] shadow-sm'
                   : 'text-slate-500 hover:text-slate-700'
-              }`}
+                }`}
             >
               <Send size={18} />
               Telegram
             </button>
             <button
               onClick={() => handlePlatformChange('whatsapp')}
-              className={`flex-1 flex items-center justify-center gap-2 py-3 rounded-xl text-sm font-bold transition-all ${
-                platform === 'whatsapp'
+              className={`flex-1 flex items-center justify-center gap-2 py-3 rounded-xl text-sm font-bold transition-all ${platform === 'whatsapp'
                   ? 'bg-white text-[#25D366] shadow-sm'
                   : 'text-slate-500 hover:text-slate-700'
-              }`}
+                }`}
             >
               <MessageCircle size={18} />
               WhatsApp
@@ -180,9 +190,9 @@ export default function AddSellerModal() {
               type="text"
               placeholder={platform === 'telegram' ? "Type channel name (e.g. Toyerzone)..." : "Type WhatsApp group/community name..."}
               value={searchQuery}
-              onChange={(e) => { 
-                setSearchQuery(e.target.value); 
-                setSelectedSeller(null); 
+              onChange={(e) => {
+                setSearchQuery(e.target.value);
+                setSelectedSeller(null);
                 setError(null);
               }}
               className="w-full pl-14 pr-6 py-4 bg-slate-50 border-2 border-slate-100 rounded-2xl text-base font-medium focus:ring-4 focus:ring-primary/5 focus:border-primary transition-all outline-none placeholder:text-slate-400"
@@ -232,7 +242,7 @@ export default function AddSellerModal() {
                   const isTelegram = platform === 'telegram';
                   const tgItem = item as ChatSearchResult;
                   const waItem = item as WhatsappChatSearchResult;
-                  
+
                   const id = isTelegram ? tgItem.chat_id : waItem.jid;
                   const name = isTelegram ? tgItem.chat_name : waItem.name;
                   const type = isTelegram ? tgItem.chat_type : waItem.type;
@@ -246,18 +256,16 @@ export default function AddSellerModal() {
                     <div
                       key={id || idx}
                       onClick={() => setSelectedSeller(selectionValue)}
-                      className={`p-5 rounded-[20px] border-2 transition-all cursor-pointer flex items-center justify-between ${
-                        selectedSeller === selectionValue
+                      className={`p-5 rounded-[20px] border-2 transition-all cursor-pointer flex items-center justify-between ${selectedSeller === selectionValue
                           ? 'border-primary bg-primary/5 shadow-md shadow-primary/5'
                           : 'border-slate-100 bg-white hover:border-slate-200'
-                      }`}
+                        }`}
                     >
                       <div className="flex items-center gap-4">
-                        <div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-sm shrink-0 ${
-                          selectedSeller === selectionValue 
-                            ? (isTelegram ? 'bg-[#229ED9] text-white' : 'bg-[#25D366] text-white') 
+                        <div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-sm shrink-0 ${selectedSeller === selectionValue
+                            ? (isTelegram ? 'bg-[#229ED9] text-white' : 'bg-[#25D366] text-white')
                             : 'bg-slate-100 text-slate-500'
-                        }`}>
+                          }`}>
                           {name?.substring(0, 1).toUpperCase() || '?'}
                         </div>
                         <div>
@@ -269,11 +277,10 @@ export default function AddSellerModal() {
                           </p>
                         </div>
                       </div>
-                      <div className={`w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all shrink-0 ${
-                        selectedSeller === selectionValue
+                      <div className={`w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all shrink-0 ${selectedSeller === selectionValue
                           ? 'bg-primary border-primary text-white'
                           : 'border-slate-200 text-transparent'
-                      }`}>
+                        }`}>
                         <Check size={14} strokeWidth={3} />
                       </div>
                     </div>

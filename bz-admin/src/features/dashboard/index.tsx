@@ -5,7 +5,7 @@ import StatCard from './components/StatCard';
 import RecentlyAnalyzed from './components/RecentlyAnalyzed';
 import { dashboardService, type DashboardStats } from '@/services/dashboard';
 import { messagingService, type TelegramStatusResponse, type WhatsappStatusResponse } from '@/services/messaging';
-import { Send, MessageCircle, CheckCircle2, AlertCircle } from 'lucide-react';
+import { Send, MessageCircle, CheckCircle2, AlertCircle, Loader2 } from 'lucide-react';
 
 export default function Dashboard() {
   const [stats, setStats] = useState<DashboardStats | null>(null);
@@ -53,15 +53,24 @@ export default function Dashboard() {
         {/* Telegram Status */}
         <div className="bg-white rounded-[24px] p-6 border border-slate-100 shadow-sm flex items-center justify-between">
           <div className="flex items-center gap-4">
-            <div className={`w-12 h-12 rounded-2xl flex items-center justify-center shadow-lg ${
-              tgStatus?.connected ? 'bg-[#229ED9] shadow-[#229ED9]/20 text-white' : 'bg-slate-100 text-slate-400'
+            <div className={`w-12 h-12 rounded-2xl flex items-center justify-center shadow-lg transition-all ${
+              loading 
+                ? 'bg-slate-50 text-slate-300 animate-pulse' 
+                : tgStatus?.connected 
+                  ? 'bg-[#229ED9] shadow-[#229ED9]/20 text-white' 
+                  : 'bg-slate-100 text-slate-400'
             }`}>
               <Send size={24} />
             </div>
             <div>
               <h3 className="text-sm font-bold text-slate-400 uppercase tracking-widest">Telegram Status</h3>
               <div className="flex items-center gap-2 mt-1">
-                {tgStatus?.connected ? (
+                {loading ? (
+                  <div className="flex items-center gap-2">
+                    <Loader2 size={16} className="text-primary animate-spin" />
+                    <span className="text-slate-400 text-sm font-medium">Checking connection...</span>
+                  </div>
+                ) : tgStatus?.connected ? (
                   <>
                     <CheckCircle2 size={16} className="text-emerald-500" />
                     <span className="font-bold text-slate-800">{tgStatus.display_name || 'Connected'}</span>
@@ -81,15 +90,24 @@ export default function Dashboard() {
         {/* WhatsApp Status */}
         <div className="bg-white rounded-[24px] p-6 border border-slate-100 shadow-sm flex items-center justify-between">
           <div className="flex items-center gap-4">
-            <div className={`w-12 h-12 rounded-2xl flex items-center justify-center shadow-lg ${
-              waStatus?.state === 'connected' ? 'bg-[#25D366] shadow-[#25D366]/20 text-white' : 'bg-slate-100 text-slate-400'
+            <div className={`w-12 h-12 rounded-2xl flex items-center justify-center shadow-lg transition-all ${
+              loading 
+                ? 'bg-slate-50 text-slate-300 animate-pulse' 
+                : waStatus?.state === 'connected' 
+                  ? 'bg-[#25D366] shadow-[#25D366]/20 text-white' 
+                  : 'bg-slate-100 text-slate-400'
             }`}>
               <MessageCircle size={24} />
             </div>
             <div>
               <h3 className="text-sm font-bold text-slate-400 uppercase tracking-widest">WhatsApp Status</h3>
               <div className="flex items-center gap-2 mt-1">
-                {waStatus?.state === 'connected' ? (
+                {loading ? (
+                  <div className="flex items-center gap-2">
+                    <Loader2 size={16} className="text-primary animate-spin" />
+                    <span className="text-slate-400 text-sm font-medium">Checking connection...</span>
+                  </div>
+                ) : waStatus?.state === 'connected' ? (
                   <>
                     <CheckCircle2 size={16} className="text-emerald-500" />
                     <span className="font-bold text-slate-800">{waStatus.display_name || 'Connected'}</span>
