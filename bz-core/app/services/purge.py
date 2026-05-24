@@ -7,7 +7,7 @@ Drops ALL product data from every storage layer:
                   (ARQ result / queue keys are intentionally left intact)
   - iDrive E2   : delete all objects under the  products/  prefix
 
-Runs every Sunday at midnight IST (Saturday 18:30 UTC) via the ARQ cron.
+Runs every Sunday at 11:59 PM IST (Sunday 18:29 UTC) via the ARQ cron.
 """
 
 from __future__ import annotations

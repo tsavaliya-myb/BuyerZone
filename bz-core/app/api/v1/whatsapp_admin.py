@@ -74,6 +74,12 @@ async def request_pair_code(body: WAPairRequest, _=Depends(require_admin)):
         result = await wa.request_pair_code(phone)
     except httpx.HTTPStatusError as exc:
         raise HTTPException(status_code=exc.response.status_code, detail=str(exc)) from exc
+    except (httpx.RemoteProtocolError, httpx.ConnectError, httpx.TimeoutException) as exc:
+        log.warning("wa_listener_pair_failed", error=str(exc))
+        raise HTTPException(
+            status_code=502,
+            detail={"error": "wa_listener_unavailable", "message": str(exc)},
+        ) from exc
     return WAPairResponse(code=result["code"], expires_in=result.get("expires_in", 60))
 
 
@@ -109,6 +115,13 @@ async def resolve_chats(body: WAChatResolveRequest, _=Depends(require_admin)):
         except Exception:
             detail = str(exc)
         raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+    except (httpx.RemoteProtocolError, httpx.ConnectError, httpx.TimeoutException) as exc:
+        # wa_listener crashed, timed out, or dropped the connection mid-response
+        log.warning("wa_listener_unreachable", error=str(exc))
+        raise HTTPException(
+            status_code=502,
+            detail={"error": "wa_listener_unavailable", "message": str(exc)},
+        ) from exc
     return result
 
 
