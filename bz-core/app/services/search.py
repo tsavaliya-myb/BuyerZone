@@ -21,27 +21,49 @@ log = structlog.get_logger(__name__)
 settings = get_settings()
 
 
-async def search_by_image(vector: list[float], top_k: int, db: AsyncSession) -> SearchResponse:
+async def search_by_image(vector: list[float], page: int, size: int, db: AsyncSession) -> SearchResponse:
     t0 = time.perf_counter()
     client = get_qdrant_client()
+
+    offset = (page - 1) * size
 
     response = await client.query_points(
         collection_name=settings.qdrant_collection,
         query=vector,
         query_filter=Filter(must=[FieldCondition(key="status", match=MatchValue(value="active"))]),
-        limit=top_k,
+        limit=size,
+        offset=offset,
         score_threshold=settings.search_similarity_threshold,
         with_payload=True,
     )
 
     items = await _enrich(response.points, db)
     elapsed_ms = (time.perf_counter() - t0) * 1000
-    return SearchResponse(results=items, total=len(items), query_time_ms=round(elapsed_ms, 2))
+    return SearchResponse(
+        results=items, 
+        total=len(items), 
+        query_time_ms=round(elapsed_ms, 2),
+        page=page,
+        size=size
+    )
 
 
-async def search_by_text(query: str, top_k: int, db: AsyncSession) -> SearchResponse:
+async def search_by_text(query: str, page: int, size: int, db: AsyncSession) -> SearchResponse:
     t0 = time.perf_counter()
     pattern = f"%{query}%"
+
+    from sqlalchemy import func
+
+    total_result = await db.execute(
+        select(func.count(Product.id)).where(
+            Product.status == "active",
+            or_(Product.name.ilike(pattern), Product.raw_caption.ilike(pattern)),
+        )
+    )
+    total = total_result.scalar_one()
+
+    offset = (page - 1) * size
+
     result = await db.execute(
         select(Product)
         .options(selectinload(Product.wholesaler))
@@ -49,20 +71,28 @@ async def search_by_text(query: str, top_k: int, db: AsyncSession) -> SearchResp
             Product.status == "active",
             or_(Product.name.ilike(pattern), Product.raw_caption.ilike(pattern)),
         )
-        .limit(top_k)
+        .offset(offset)
+        .limit(size)
     )
     products = result.scalars().all()
     chats = await _load_chats(products, db)
     items = [_product_to_result(p, 1.0, chats) for p in products]
     elapsed_ms = (time.perf_counter() - t0) * 1000
-    return SearchResponse(results=items, total=len(items), query_time_ms=round(elapsed_ms, 2))
+    return SearchResponse(
+        results=items, 
+        total=total, 
+        query_time_ms=round(elapsed_ms, 2),
+        page=page,
+        size=size
+    )
 
 
 async def search_combined(
     image_vector: list[float] | None,
     text_vector: list[float] | None,
     image_weight: float,
-    top_k: int,
+    page: int,
+    size: int,
     db: AsyncSession,
     text_query: str | None = None,
 ) -> SearchResponse:
@@ -71,7 +101,8 @@ async def search_combined(
     client = get_qdrant_client()
     text_weight = 1.0 - image_weight
 
-    fetch_k = min(top_k * 3, 100)
+    # Always fetch a large number from Qdrant to merge accurately, since pagination happens after merging
+    fetch_k = 100 
     active_filter = Filter(must=[FieldCondition(key="status", match=MatchValue(value="active"))])
 
     # qdrant_id → fused score
@@ -118,7 +149,7 @@ async def search_combined(
             keyword_scores[str(pid)] = text_weight
 
     # Resolve qdrant scores → product_ids
-    sorted_qdrant_ids = sorted(scores, key=lambda k: scores[k], reverse=True)[:top_k]
+    sorted_qdrant_ids = sorted(scores, key=lambda k: scores[k], reverse=True)[:fetch_k]
 
     product_ids_from_qdrant: list[str] = []
     if sorted_qdrant_ids:
@@ -142,9 +173,11 @@ async def search_combined(
             merged[pid] = kw_score
 
     if not merged:
-        return SearchResponse(results=[], total=0, query_time_ms=0)
+        return SearchResponse(results=[], total=0, query_time_ms=0, page=page, size=size)
 
-    sorted_pids = sorted(merged, key=lambda k: merged[k], reverse=True)[:top_k]
+    offset = (page - 1) * size
+    sorted_pids = sorted(merged, key=lambda k: merged[k], reverse=True)[offset:offset + size]
+    total_matches = len(merged)
 
     result = await db.execute(
         select(Product)
@@ -161,7 +194,13 @@ async def search_combined(
     ]
 
     elapsed_ms = (time.perf_counter() - t0) * 1000
-    return SearchResponse(results=items, total=len(items), query_time_ms=round(elapsed_ms, 2))
+    return SearchResponse(
+        results=items, 
+        total=total_matches, 
+        query_time_ms=round(elapsed_ms, 2),
+        page=page,
+        size=size
+    )
 
 
 async def _enrich(qdrant_results, db: AsyncSession) -> list[SearchResultItem]:

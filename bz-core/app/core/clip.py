@@ -31,11 +31,11 @@ def _load() -> None:
 
     _device = _get_device()
     _model, _, _preprocess = open_clip.create_model_and_transforms(
-        "ViT-B-32-quickgelu",
-        pretrained="openai",
+        "ViT-B-16-SigLIP",
+        pretrained="webli",
         device=_device,
     )
-    _tokenizer = open_clip.get_tokenizer("ViT-B-32")
+    _tokenizer = open_clip.get_tokenizer("ViT-B-16-SigLIP")
     _model.eval()
 
 

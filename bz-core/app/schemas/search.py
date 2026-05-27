@@ -41,3 +41,5 @@ class SearchResponse(BaseModel):
     results: list[SearchResultItem]
     total: int
     query_time_ms: float
+    page: int = 1
+    size: int = 10

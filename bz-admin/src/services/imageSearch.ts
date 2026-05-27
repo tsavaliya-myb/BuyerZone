@@ -20,17 +20,19 @@ export interface ImageSearchResponse {
   results: ImageSearchResult[];
   total: number;
   query_time_ms: number;
+  page?: number;
+  size?: number;
 }
 
 export const imageSearchService = {
-  searchByImage: async (file: File, topK: number = 10): Promise<ImageSearchResponse> => {
+  searchByImage: async (file: File, page: number = 1, size: number = 10): Promise<ImageSearchResponse> => {
     const formData = new FormData();
     formData.append('file', file);
     formData.append('image_base64', '');
 
     // Do NOT set Content-Type — axios sets it automatically with boundary for FormData
     const response = await api.post<ImageSearchResponse>(
-      `search/image?top_k=${topK}`,
+      `search/image?page=${page}&size=${size}`,
       formData,
       {
         headers: { 'Content-Type': 'multipart/form-data' },
@@ -39,9 +41,9 @@ export const imageSearchService = {
     return response.data;
   },
 
-  searchByText: async (query: string, topK: number = 10): Promise<ImageSearchResponse> => {
+  searchByText: async (query: string, page: number = 1, size: number = 10): Promise<ImageSearchResponse> => {
     const response = await api.get<ImageSearchResponse>(
-      `search/text?q=${encodeURIComponent(query)}&top_k=${topK}`
+      `search/text?q=${encodeURIComponent(query)}&page=${page}&size=${size}`
     );
     return response.data;
   },

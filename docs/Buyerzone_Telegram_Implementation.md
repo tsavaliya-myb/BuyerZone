@@ -698,3 +698,9 @@ This module is intentionally scoped to ingestion and search. The data it produce
 uvicorn app.main:app --reload --port 8000
 python -m arq app.workers.arq_worker.WorkerSettings
 python -m app.services.ingestion
+
+curl -X DELETE 'https://025bbbad-908a-4786-8c10-a979acd729d8.us-west-2-0.aws.cloud.qdrant.io/collections/product_embeddings' --header 'api-key: '
+
+curl 'https://025bbbad-908a-4786-8c10-a979acd729d8.us-west-2-0.aws.cloud.qdrant.io/collections/product_embeddings' --header 'api-key: '
+
+curl 'localhost:6333/collections/product_embeddings' 
