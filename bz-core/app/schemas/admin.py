@@ -67,6 +67,10 @@ class ChatAddRequest(BaseModel):
     chat_name: str  # Exact name as seen in Telegram
 
 
+class ChatAddBatchRequest(BaseModel):
+    chats: list[ChatAddRequest]
+
+
 class ChatUpdateRequest(BaseModel):
     phone: str | None = None
 

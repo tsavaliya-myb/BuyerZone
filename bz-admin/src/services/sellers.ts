@@ -49,8 +49,18 @@ export const sellersService = {
     return response.data;
   },
 
+  addWhatsappSellersBatch: async (chats: { jid: string; chat_name: string }[]): Promise<any> => {
+    const response = await api.post<any>('admin/whatsapp/chats/add-batch', { chats });
+    return response.data;
+  },
+
   addSeller: async (chat_name: string): Promise<Seller> => {
     const response = await api.post<Seller>('admin/chats/add', { chat_name });
+    return response.data;
+  },
+
+  addSellersBatch: async (chats: { chat_name: string }[]): Promise<Seller[]> => {
+    const response = await api.post<Seller[]>('admin/chats/add-batch', { chats });
     return response.data;
   },
 

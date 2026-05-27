@@ -45,6 +45,10 @@ class WAChatAddRequest(BaseModel):
     chat_name: str | None = None
 
 
+class WAChatAddBatchRequest(BaseModel):
+    chats: list[WAChatAddRequest]
+
+
 class WAChatResponse(BaseModel):
     id: str
     jid: str

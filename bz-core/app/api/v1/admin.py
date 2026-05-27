@@ -14,6 +14,7 @@ from app.models.monitored_chat import MonitoredChat
 from app.models.product import Product
 from app.models.wholesaler import Wholesaler
 from app.schemas.admin import (
+    ChatAddBatchRequest,
     ChatAddRequest,
     ChatSearchRequest,
     ChatUpdateRequest,
@@ -101,6 +102,53 @@ async def add_chat(
     await db.refresh(chat)
     await reload_whitelist_via_ingestion()
     return MonitoredChatResponse.model_validate(chat)
+
+
+@router.post("/chats/add-batch", response_model=list[MonitoredChatResponse], status_code=201)
+async def add_chats_batch(
+    body: ChatAddBatchRequest,
+    db: AsyncSession = Depends(get_db),
+    admin=Depends(require_admin),
+):
+    from app.core.telegram import reload_whitelist_via_ingestion, resolve_dialog_via_ingestion
+
+    responses = []
+
+    for chat_req in body.chats:
+        match = await resolve_dialog_via_ingestion(chat_req.chat_name)
+        if not match:
+            continue
+
+        chat_id_str = str(match["chat_id"])
+
+        # Check if already monitored
+        existing = await db.execute(
+            select(MonitoredChat).where(
+                MonitoredChat.chat_id == chat_id_str,
+                MonitoredChat.platform == "telegram",
+            )
+        )
+        chat = existing.scalar_one_or_none()
+        if chat:
+            chat.is_active = True
+        else:
+            chat = MonitoredChat(
+                chat_id=chat_id_str,
+                platform="telegram",
+                chat_name=match["chat_name"],
+                chat_type=match["chat_type"],
+                added_by=uuid.UUID(admin["sub"]),
+            )
+            db.add(chat)
+
+        await db.flush()
+        responses.append(chat)
+
+    await db.commit()
+    for c in responses:
+        await db.refresh(c)
+    await reload_whitelist_via_ingestion()
+    return [MonitoredChatResponse.model_validate(c) for c in responses]
 
 
 @router.delete("/chats/{chat_db_id}", status_code=204)

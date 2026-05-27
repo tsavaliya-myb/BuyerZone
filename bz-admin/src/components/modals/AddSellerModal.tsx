@@ -9,7 +9,7 @@ export default function AddSellerModal() {
   const [platform, setPlatform] = useState<'telegram' | 'whatsapp'>('telegram');
   const [searchQuery, setSearchQuery] = useState('');
   const [results, setResults] = useState<(ChatSearchResult | WhatsappChatSearchResult)[]>([]);
-  const [selectedSeller, setSelectedSeller] = useState<string | null>(null);
+  const [selectedSellers, setSelectedSellers] = useState<string[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const [isAdding, setIsAdding] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -21,7 +21,7 @@ export default function AddSellerModal() {
       setPlatform('telegram');
       setSearchQuery('');
       setResults([]);
-      setSelectedSeller(null);
+      setSelectedSellers([]);
       setError(null);
       setSuccess(false);
       setIsSearching(false);
@@ -33,7 +33,7 @@ export default function AddSellerModal() {
     setPlatform(newPlatform);
     setSearchQuery('');
     setResults([]);
-    setSelectedSeller(null);
+    setSelectedSellers([]);
     setError(null);
   };
 
@@ -71,26 +71,32 @@ export default function AddSellerModal() {
     };
   }, [searchQuery]);
 
+  const toggleSelection = (value: string) => {
+    setSelectedSellers(prev => 
+      prev.includes(value) ? prev.filter(v => v !== value) : [...prev, value]
+    );
+  };
+
   const handleAdd = async () => {
-    const nameToAdd = selectedSeller || searchQuery.trim();
-    if (!nameToAdd) return;
+    const itemsToAdd = selectedSellers.length > 0 ? selectedSellers : (searchQuery.trim() ? [searchQuery.trim()] : []);
+    if (itemsToAdd.length === 0) return;
 
     setIsAdding(true);
     setError(null);
     try {
       if (platform === 'telegram') {
-        console.log("Adding telegram seller:", nameToAdd);
-        await sellersService.addSeller(nameToAdd);
+        console.log("Adding telegram sellers:", itemsToAdd);
+        await sellersService.addSellersBatch(itemsToAdd.map(name => ({ chat_name: name })));
       } else {
-        console.log("Adding whatsapp seller:", nameToAdd);
-        let chat_name = nameToAdd;
-        if (selectedSeller) {
-          const selectedItem = results.find(r => (r as WhatsappChatSearchResult).jid === selectedSeller);
-          if (selectedItem) {
-            chat_name = (selectedItem as WhatsappChatSearchResult).name;
-          }
-        }
-        await sellersService.addWhatsappSeller({ jid: nameToAdd, chat_name });
+        console.log("Adding whatsapp sellers:", itemsToAdd);
+        const waPayload = itemsToAdd.map(id => {
+          const result = results.find(r => (r as WhatsappChatSearchResult).jid === id);
+          return {
+            jid: id,
+            chat_name: result ? (result as WhatsappChatSearchResult).name : id
+          };
+        });
+        await sellersService.addWhatsappSellersBatch(waPayload);
       }
       setSuccess(true);
       
@@ -182,7 +188,7 @@ export default function AddSellerModal() {
               value={searchQuery}
               onChange={(e) => { 
                 setSearchQuery(e.target.value); 
-                setSelectedSeller(null); 
+                setSelectedSellers([]); 
                 setError(null);
               }}
               className="w-full pl-14 pr-6 py-4 bg-slate-50 border-2 border-slate-100 rounded-2xl text-base font-medium focus:ring-4 focus:ring-primary/5 focus:border-primary transition-all outline-none placeholder:text-slate-400"
@@ -242,19 +248,21 @@ export default function AddSellerModal() {
                   // For WhatsApp we'll use jid.
                   const selectionValue = isTelegram ? name : id;
 
+                  const isSelected = selectedSellers.includes(selectionValue);
+
                   return (
                     <div
                       key={id || idx}
-                      onClick={() => setSelectedSeller(selectionValue)}
+                      onClick={() => toggleSelection(selectionValue)}
                       className={`p-5 rounded-[20px] border-2 transition-all cursor-pointer flex items-center justify-between ${
-                        selectedSeller === selectionValue
+                        isSelected
                           ? 'border-primary bg-primary/5 shadow-md shadow-primary/5'
                           : 'border-slate-100 bg-white hover:border-slate-200'
                       }`}
                     >
                       <div className="flex items-center gap-4">
                         <div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-sm shrink-0 ${
-                          selectedSeller === selectionValue 
+                          isSelected
                             ? (isTelegram ? 'bg-[#229ED9] text-white' : 'bg-[#25D366] text-white') 
                             : 'bg-slate-100 text-slate-500'
                         }`}>
@@ -270,7 +278,7 @@ export default function AddSellerModal() {
                         </div>
                       </div>
                       <div className={`w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all shrink-0 ${
-                        selectedSeller === selectionValue
+                        isSelected
                           ? 'bg-primary border-primary text-white'
                           : 'border-slate-200 text-transparent'
                       }`}>
@@ -294,7 +302,7 @@ export default function AddSellerModal() {
           </button>
           <button
             onClick={handleAdd}
-            disabled={(!selectedSeller && !searchQuery.trim()) || isAdding || success}
+            disabled={(selectedSellers.length === 0 && !searchQuery.trim()) || isAdding || success}
             className="flex-[2] px-10 py-4 rounded-2xl bg-primary text-white font-bold hover:bg-primary-dark transition-all shadow-lg shadow-primary/20 disabled:opacity-50 disabled:cursor-not-allowed active:scale-95 text-sm uppercase tracking-widest flex items-center justify-center gap-2"
           >
             {isAdding ? (
@@ -302,7 +310,7 @@ export default function AddSellerModal() {
             ) : success ? (
               <><Check size={18} /> Done!</>
             ) : (
-              <><Plus size={18} /> Confirm Addition</>
+              <><Plus size={18} /> Confirm Addition {selectedSellers.length > 0 ? `(${selectedSellers.length})` : ''}</>
             )}
           </button>
         </div>
