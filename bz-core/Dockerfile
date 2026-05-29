@@ -17,7 +17,7 @@ RUN poetry config virtualenvs.create false \
 FROM python:3.11-slim AS runtime
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libjpeg-dev zlib1g-dev libssl-dev curl \
+    libjpeg-dev zlib1g-dev libssl-dev curl g++ \
     && rm -rf /var/lib/apt/lists/*
 
 # Non-root user for security

@@ -52,8 +52,13 @@ def _load() -> None:
         # torch.compile() generates optimised native code on first call.
         # Subsequent calls (all real inference) are 20–40% faster on CPU.
         # First call after startup will be slow (compilation) — that's expected.
+        # g++ is required by the inductor backend — installed in Dockerfile runtime stage.
+        # suppress_errors=True is a safety net: if compile fails for any reason,
+        # it silently falls back to eager mode instead of crashing embed calls.
         if _device.type == "cpu":
             try:
+                import torch._dynamo as _dynamo
+                _dynamo.config.suppress_errors = True
                 _model.encode_image = torch.compile(
                     _model.encode_image,
                     mode="reduce-overhead",   # best for repeated same-shape inputs
