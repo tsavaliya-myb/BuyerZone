@@ -704,3 +704,5 @@ curl -X DELETE 'https://025bbbad-908a-4786-8c10-a979acd729d8.us-west-2-0.aws.clo
 curl 'https://025bbbad-908a-4786-8c10-a979acd729d8.us-west-2-0.aws.cloud.qdrant.io/collections/product_embeddings' --header 'api-key: '
 
 curl 'localhost:6333/collections/product_embeddings' 
+
+docker compose -f infra/docker-compose.prod.yml exec api python -c "import asyncio; from app.services.purge import run_weekly_purge; asyncio.run(run_weekly_purge())"

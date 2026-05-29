@@ -9,7 +9,7 @@ export default function AddSellerModal() {
   const [platform, setPlatform] = useState<'telegram' | 'whatsapp'>('telegram');
   const [searchQuery, setSearchQuery] = useState('');
   const [results, setResults] = useState<(ChatSearchResult | WhatsappChatSearchResult)[]>([]);
-  const [selectedSellers, setSelectedSellers] = useState<string[]>([]);
+  const [selectedSellers, setSelectedSellers] = useState<{id: string, name: string}[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const [isAdding, setIsAdding] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -71,14 +71,19 @@ export default function AddSellerModal() {
     };
   }, [searchQuery]);
 
-  const toggleSelection = (value: string) => {
+  const toggleSelection = (id: string, name: string) => {
     setSelectedSellers(prev => 
-      prev.includes(value) ? prev.filter(v => v !== value) : [...prev, value]
+      prev.some(v => v.id === id) 
+        ? prev.filter(v => v.id !== id) 
+        : [...prev, { id, name }]
     );
   };
 
   const handleAdd = async () => {
-    const itemsToAdd = selectedSellers.length > 0 ? selectedSellers : (searchQuery.trim() ? [searchQuery.trim()] : []);
+    const itemsToAdd = selectedSellers.length > 0 
+      ? selectedSellers 
+      : (searchQuery.trim() ? [{ id: searchQuery.trim(), name: searchQuery.trim() }] : []);
+      
     if (itemsToAdd.length === 0) return;
 
     setIsAdding(true);
@@ -86,16 +91,13 @@ export default function AddSellerModal() {
     try {
       if (platform === 'telegram') {
         console.log("Adding telegram sellers:", itemsToAdd);
-        await sellersService.addSellersBatch(itemsToAdd.map(name => ({ chat_name: name })));
+        await sellersService.addSellersBatch(itemsToAdd.map(item => ({ chat_name: item.name })));
       } else {
         console.log("Adding whatsapp sellers:", itemsToAdd);
-        const waPayload = itemsToAdd.map(id => {
-          const result = results.find(r => (r as WhatsappChatSearchResult).jid === id);
-          return {
-            jid: id,
-            chat_name: result ? (result as WhatsappChatSearchResult).name : id
-          };
-        });
+        const waPayload = itemsToAdd.map(item => ({
+          jid: item.id,
+          chat_name: item.name
+        }));
         await sellersService.addWhatsappSellersBatch(waPayload);
       }
       setSuccess(true);
@@ -188,7 +190,6 @@ export default function AddSellerModal() {
               value={searchQuery}
               onChange={(e) => { 
                 setSearchQuery(e.target.value); 
-                setSelectedSellers([]); 
                 setError(null);
               }}
               className="w-full pl-14 pr-6 py-4 bg-slate-50 border-2 border-slate-100 rounded-2xl text-base font-medium focus:ring-4 focus:ring-primary/5 focus:border-primary transition-all outline-none placeholder:text-slate-400"
@@ -248,12 +249,12 @@ export default function AddSellerModal() {
                   // For WhatsApp we'll use jid.
                   const selectionValue = isTelegram ? name : id;
 
-                  const isSelected = selectedSellers.includes(selectionValue);
+                  const isSelected = selectedSellers.some(v => v.id === selectionValue);
 
                   return (
                     <div
                       key={id || idx}
-                      onClick={() => toggleSelection(selectionValue)}
+                      onClick={() => toggleSelection(selectionValue, name || selectionValue)}
                       className={`p-5 rounded-[20px] border-2 transition-all cursor-pointer flex items-center justify-between ${
                         isSelected
                           ? 'border-primary bg-primary/5 shadow-md shadow-primary/5'
