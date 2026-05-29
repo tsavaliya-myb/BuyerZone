@@ -44,6 +44,6 @@ class WorkerSettings:
     ]
     on_startup = startup
     redis_settings = settings.arq_redis_settings
-    max_jobs = 10
+    max_jobs = 2  # 3 workers × 2 = 6 concurrent CLIP jobs ≈ matches 4 vCPUs
     job_timeout = 600  # 10 minutes — CLIP inference + DB writes on slow hardware
     keep_result = 3600  # keep job results for 1 hour

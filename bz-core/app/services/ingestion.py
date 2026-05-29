@@ -367,18 +367,10 @@ async def _enqueue_from_history(client: Client, message, chat_title: str) -> boo
     is_photo = message.photo is not None
     grouped_id = message.media_group_id
     
-    if is_photo and grouped_id is not None and not caption:
+    if not is_photo:
         return False
-    if not is_photo and not caption:
-        return False
-    if not is_photo and (
-        message.video
-        or message.document
-        or message.sticker
-        or message.voice
-        or message.audio
-        or message.animation
-    ):
+
+    if grouped_id is not None and not caption:
         return False
     if caption and OUT_OF_STOCK_PATTERNS.search(caption):
         return False
@@ -468,6 +460,7 @@ async def _catch_up_chat(client: Client, chat_id: int, chat_title: str) -> int:
     for message in missed:
         try:
             caption = (message.caption or message.text or "").strip()
+            price = None
             if caption:
                 price = _extract_price(caption)
                 if (caption, price) in existing_products:
@@ -479,6 +472,8 @@ async def _catch_up_chat(client: Client, chat_id: int, chat_title: str) -> int:
                     continue
             if await _enqueue_from_history(client, message, chat_title):
                 enqueued += 1
+                if caption:
+                    existing_products.add((caption, price))
         except Exception as exc:
             log.error(
                 "catch_up_message_failed",
