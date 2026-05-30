@@ -7,7 +7,7 @@ settings = get_settings()
 
 _client: AsyncQdrantClient | None = None
 
-VECTOR_SIZE = 512  # CLIP ViT-B/32 output dimension
+VECTOR_SIZE = 768  # SigLIP output dimension
 
 
 def get_qdrant_client() -> AsyncQdrantClient:

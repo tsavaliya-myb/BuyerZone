@@ -19,6 +19,7 @@ from app.models.monitored_chat import MonitoredChat
 from app.models.platform_session import PlatformSession
 from app.models.product import Product
 from app.schemas.whatsapp_admin import (
+    WAChatAddBatchRequest,
     WAChatAddRequest,
     WAChatResolveRequest,
     WAChatResponse,
@@ -207,6 +208,74 @@ async def add_chat(
     )
 
 
+@router.post("/chats/add-batch", response_model=list[WAChatResponse], status_code=201)
+async def add_chats_batch(
+    body: WAChatAddBatchRequest,
+    db: AsyncSession = Depends(get_db),
+    admin=Depends(require_admin),
+):
+    added_chats = []
+
+    for req in body.chats:
+        jid = req.jid.strip()
+
+        if jid.endswith("@newsletter") or jid.endswith("@broadcast"):
+            chat_type = "wa_channel"
+        elif jid.endswith("@s.whatsapp.net"):
+            chat_type = "wa_contact"
+        else:
+            chat_type = "wa_group"
+
+        chat_name = (req.chat_name or "").strip() or jid
+
+        existing = await db.execute(
+            select(MonitoredChat).where(
+                MonitoredChat.chat_id == jid,
+                MonitoredChat.platform == "whatsapp",
+            )
+        )
+        chat = existing.scalar_one_or_none()
+        if chat:
+            chat.is_active = True
+            chat.chat_name = chat_name
+        else:
+            chat = MonitoredChat(
+                chat_id=jid,
+                platform="whatsapp",
+                chat_name=chat_name,
+                chat_type=chat_type,
+                added_by=uuid.UUID(admin["sub"]),
+            )
+            db.add(chat)
+
+        await db.flush()
+        added_chats.append((chat, chat_type))
+
+    await db.commit()
+
+    responses = []
+    for chat, chat_type in added_chats:
+        await db.refresh(chat)
+        if chat_type == "wa_channel":
+            await wa.subscribe_newsletter(chat.chat_id)
+
+        count_result = await db.execute(select(func.count(Product.id)).where(Product.chat_id == chat.chat_id))
+        count = count_result.scalar_one()
+
+        responses.append(WAChatResponse(
+            id=str(chat.id),
+            jid=chat.chat_id,
+            platform=chat.platform,
+            chat_name=chat.chat_name,
+            chat_type=chat.chat_type,
+            is_active=chat.is_active,
+            product_count=count,
+        ))
+
+    await wa.reload_whitelist()
+    return responses
+
+
 @router.delete("/chats/{chat_db_id}", status_code=204)
 async def remove_chat(
     chat_db_id: uuid.UUID,
@@ -309,5 +378,5 @@ async def session_update(
         )
 
     await db.commit()
-    log.debug("wa_session_saved", phone=phone)
+    # log.debug("wa_session_saved", phone=phone)
     return {"status": "ok"}

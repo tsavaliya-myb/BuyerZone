@@ -23,7 +23,8 @@ def _decode_image(b64: str) -> bytes:
 async def search_by_image(
     file: UploadFile | None = File(None),
     image_base64: str | None = Form(None),
-    top_k: int = Query(default=10, ge=1, le=100),
+    page: int = Query(default=1, ge=1),
+    size: int = Query(default=10, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
     _=Depends(require_admin),
 ):
@@ -38,17 +39,18 @@ async def search_by_image(
 
     loop = asyncio.get_running_loop()
     vector = await loop.run_in_executor(None, embed_image, image_bytes)
-    return await search_svc.search_by_image(vector, top_k, db)
+    return await search_svc.search_by_image(vector, page, size, db)
 
 
 @router.get("/text", response_model=SearchResponse)
 async def search_by_text(
     q: str = Query(..., min_length=1),
-    top_k: int = Query(default=10, ge=1, le=100),
+    page: int = Query(default=1, ge=1),
+    size: int = Query(default=10, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
     _=Depends(require_admin),
 ):
-    return await search_svc.search_by_text(q, top_k, db)
+    return await search_svc.search_by_text(q, page, size, db)
 
 
 @router.post("/combined", response_model=SearchResponse)
@@ -57,7 +59,8 @@ async def search_combined(
     image_base64: str | None = Form(None),
     text: str | None = Form(None),
     image_weight: float = Form(default=0.7),
-    top_k: int = Query(default=10, ge=1, le=100),
+    page: int = Query(default=1, ge=1),
+    size: int = Query(default=10, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
     _=Depends(require_admin),
 ):
@@ -80,5 +83,5 @@ async def search_combined(
         raise HTTPException(status_code=400, detail="Provide at least image or text")
 
     return await search_svc.search_combined(
-        image_vector, text_vector, image_weight, top_k, db, text_query=text
+        image_vector, text_vector, image_weight, page, size, db, text_query=text
     )

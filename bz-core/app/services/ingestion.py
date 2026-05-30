@@ -64,7 +64,7 @@ OUT_OF_STOCK_PATTERNS = re.compile(
 MAX_CONCURRENT_DOWNLOADS = 20
 _download_sem = asyncio.Semaphore(MAX_CONCURRENT_DOWNLOADS)
 
-FIRST_RUN_MSG_LIMIT = 20  # messages to fetch on first-ever poll (no prior state)
+FIRST_RUN_MSG_LIMIT = 1  # messages to fetch on first-ever poll (no prior state)
 POLL_INTERVAL = 15 * 60  # seconds between full poll cycles
 
 # Set in main() once we know whether a session is available.
@@ -322,17 +322,17 @@ async def _download_and_enqueue(
 
 # ── Startup catch-up ──────────────────────────────────────────────────────────
 async def _get_last_logged_msg_id(chat_id: int) -> int | None:
-    from sqlalchemy import func, select
+    from sqlalchemy import func, select, cast, Integer
     from app.core.database import AsyncSessionLocal
     from app.models.ingestion_log import IngestionLog
     async with AsyncSessionLocal() as session:
         result = await session.execute(
-            select(func.max(IngestionLog.message_id)).where(
+            select(func.max(cast(IngestionLog.message_id, Integer))).where(
                 IngestionLog.chat_id == str(chat_id)
             )
         )
         val = result.scalar_one_or_none()
-        return int(val) if val is not None else None
+        return val
 
 async def _advance_cursor(chat_id: int, max_msg_id: int) -> None:
     """Write a 'seen' ingestion_log so the cursor advances past all fetched messages.

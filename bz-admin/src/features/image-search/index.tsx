@@ -21,6 +21,7 @@ export default function ImageSearch() {
   const [visualSearch, setVisualSearch] = useState({
     results: [] as ImageSearchResult[],
     total: 0,
+    page: 1,
     queryTime: null as number | null,
     hasSearched: false,
     error: null as string | null
@@ -29,13 +30,14 @@ export default function ImageSearch() {
   const [textSearch, setTextSearch] = useState({
     results: [] as ImageSearchResult[],
     total: 0,
+    page: 1,
     queryTime: null as number | null,
     hasSearched: false,
     error: null as string | null
   });
 
   const currentSearch = searchMode === 'visual' ? visualSearch : textSearch;
-  const { results, total, queryTime, hasSearched, error } = currentSearch;
+  const { results, total, page, queryTime, hasSearched, error } = currentSearch;
 
   const handleProductClick = (result: ImageSearchResult) => {
     const modalData = {
@@ -84,6 +86,7 @@ export default function ImageSearch() {
       setVisualSearch({
         results: [],
         total: 0,
+        page: 1,
         queryTime: null,
         hasSearched: false,
         error: null
@@ -97,17 +100,18 @@ export default function ImageSearch() {
     }
   };
 
-  const handleVisualSearch = async () => {
+  const handleVisualSearch = async (pageToFetch = 1) => {
     if (!selectedFile) return;
 
     setIsSearching(true);
-    setVisualSearch(prev => ({ ...prev, error: null, results: [], hasSearched: false }));
+    setVisualSearch(prev => ({ ...prev, error: null, hasSearched: false }));
 
     try {
-      const response = await imageSearchService.searchByImage(selectedFile, 10);
+      const response = await imageSearchService.searchByImage(selectedFile, pageToFetch, 10);
       setVisualSearch({
         results: response.results,
         total: response.total,
+        page: pageToFetch,
         queryTime: response.query_time_ms,
         hasSearched: true,
         error: null
@@ -126,17 +130,18 @@ export default function ImageSearch() {
     }
   };
 
-  const handleTextSearch = async () => {
+  const handleTextSearch = async (pageToFetch = 1) => {
     if (!textQuery.trim()) return;
 
     setIsSearching(true);
-    setTextSearch(prev => ({ ...prev, error: null, results: [], hasSearched: false }));
+    setTextSearch(prev => ({ ...prev, error: null, hasSearched: false }));
 
     try {
-      const response = await imageSearchService.searchByText(textQuery.trim(), 10);
+      const response = await imageSearchService.searchByText(textQuery.trim(), pageToFetch, 10);
       setTextSearch({
         results: response.results,
         total: response.total,
+        page: pageToFetch,
         queryTime: response.query_time_ms,
         hasSearched: true,
         error: null
@@ -285,7 +290,7 @@ export default function ImageSearch() {
 
                 {previewImage && !isSearching && (
                   <button
-                    onClick={handleVisualSearch}
+                    onClick={() => handleVisualSearch(1)}
                     className="text-[10px] font-extrabold text-white bg-slate-900 px-3 py-1.5 rounded-lg hover:bg-primary transition-all active:scale-95 shadow-lg shadow-slate-200 uppercase tracking-wider flex items-center gap-1.5"
                   >
                     <Zap size={12} />
@@ -350,12 +355,12 @@ export default function ImageSearch() {
                 placeholder="Search products..."
                 value={textQuery}
                 onChange={(e) => setTextQuery(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && handleTextSearch()}
+                onKeyDown={(e) => e.key === 'Enter' && handleTextSearch(1)}
                 className="block w-full pl-14 pr-28 py-4 bg-slate-50 border-2 border-slate-100 rounded-2xl text-base font-bold text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-8 focus:ring-primary/5 focus:border-primary focus:bg-white transition-all shadow-sm"
                 autoFocus
               />
               <button
-                onClick={handleTextSearch}
+                onClick={() => handleTextSearch(1)}
                 disabled={isSearching || !textQuery.trim()}
                 className="absolute right-2 top-2 bottom-2 px-6 bg-slate-900 text-white rounded-xl font-black text-[10px] uppercase tracking-widest hover:bg-primary transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 shadow-lg shadow-slate-200"
               >
@@ -544,11 +549,21 @@ export default function ImageSearch() {
               {queryTime !== null && ` · ${queryTime.toFixed(1)}ms`}
             </p>
             <div className="flex items-center gap-2">
-              <button className="w-8 h-8 flex items-center justify-center rounded-lg border border-slate-100 text-slate-400 hover:bg-slate-50 transition-colors disabled:opacity-40" disabled>
+              <button
+                onClick={() => searchMode === 'visual' ? handleVisualSearch(page - 1) : handleTextSearch(page - 1)}
+                disabled={page <= 1 || isSearching}
+                className="w-8 h-8 flex items-center justify-center rounded-lg border border-slate-100 text-slate-400 hover:bg-slate-50 transition-colors disabled:opacity-40"
+              >
                 <ChevronLeft size={16} />
               </button>
-              <button className="w-8 h-8 flex items-center justify-center rounded-lg bg-primary text-white text-xs font-bold">1</button>
-              <button className="w-8 h-8 flex items-center justify-center rounded-lg border border-slate-100 text-slate-400 hover:bg-slate-50 transition-colors disabled:opacity-40" disabled>
+              <button className="w-8 h-8 flex items-center justify-center rounded-lg bg-primary text-white text-xs font-bold">
+                {page}
+              </button>
+              <button
+                onClick={() => searchMode === 'visual' ? handleVisualSearch(page + 1) : handleTextSearch(page + 1)}
+                disabled={page * 10 >= total || isSearching}
+                className="w-8 h-8 flex items-center justify-center rounded-lg border border-slate-100 text-slate-400 hover:bg-slate-50 transition-colors disabled:opacity-40"
+              >
                 <ChevronRight size={16} />
               </button>
             </div>
