@@ -202,6 +202,15 @@ async def process_message(payload: dict) -> None:
     source_platform: str = payload.get("source_platform", "telegram")
     chat_id: str = str(payload["chat_id"])
     msg_id: str = str(payload["message_id"])
+
+    from app.core.redis import get_redis
+    redis = get_redis()
+    idem_key = f"bz:processed:{source_platform}:{chat_id}:{msg_id}"
+    
+    if await redis.get(idem_key):
+        log.info("skip_already_processed_msg_redis", chat_id=chat_id, msg_id=msg_id)
+        return
+
     caption: str = payload.get("caption", "")
     sender_id = payload.get("sender_id")
 
@@ -261,7 +270,8 @@ async def process_message(payload: dict) -> None:
             return
 
         try:
-            vector = embed_image(image_bytes)
+            import asyncio
+            vector = await asyncio.get_running_loop().run_in_executor(None, embed_image, image_bytes)
         except Exception as exc:
             log.error("embed_failed", error=str(exc))
             await _write_log(chat_id, msg_id, "failed", f"embedding error: {exc}")
@@ -344,6 +354,10 @@ async def process_message(payload: dict) -> None:
                 platform=source_platform,
                 has_image=has_image,
             )
+            try:
+                await redis.setex(idem_key, 86400 * 30, "1")
+            except Exception as redis_exc:
+                log.warning("redis_setex_failed", error=str(redis_exc))
 
         except Exception as exc:
             await session.rollback()

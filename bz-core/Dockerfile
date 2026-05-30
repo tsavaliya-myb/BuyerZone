@@ -17,7 +17,7 @@ RUN poetry config virtualenvs.create false \
 FROM python:3.11-slim AS runtime
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libjpeg-dev zlib1g-dev libssl-dev curl \
+    libjpeg-dev zlib1g-dev libssl-dev curl g++ \
     && rm -rf /var/lib/apt/lists/*
 
 # Non-root user for security
@@ -34,7 +34,8 @@ COPY --from=builder /usr/local/bin /usr/local/bin
 ENV HF_HOME=/app/.cache
 ENV TORCH_HOME=/app/.cache
 RUN mkdir -p /app/.cache \
-    && python -c "import open_clip; open_clip.create_model_and_transforms('ViT-B-16-SigLIP', pretrained='webli'); open_clip.get_tokenizer('ViT-B-16-SigLIP')"
+    && python -c "import open_clip; open_clip.create_model_and_transforms('ViT-B-16-SigLIP', pretrained='webli'); open_clip.get_tokenizer('ViT-B-16-SigLIP')" \
+    && chown -R app:app /app/.cache
 
 # Copy application source
 COPY . .

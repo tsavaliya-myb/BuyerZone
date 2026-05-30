@@ -44,6 +44,6 @@ class WorkerSettings:
     ]
     on_startup = startup
     redis_settings = settings.arq_redis_settings
-    max_jobs = 10
+    max_jobs = 5  # pipeline is mixed CPU (CLIP) + I/O (R2, Qdrant, DB) — overlap is key to throughput
     job_timeout = 600  # 10 minutes — CLIP inference + DB writes on slow hardware
     keep_result = 3600  # keep job results for 1 hour
