@@ -44,7 +44,7 @@ export default function RecentlyAnalyzed({ totalProducts: initialTotal = 0 }: Re
       retailer: sellerName,
       precision: 98.4,
       history: [
-        { date: new Date(product.created_at).toLocaleDateString(), price: `${product.currency} ${product.price}`, status: 'Current', isCurrent: true }
+        { date: new Date(product.created_at).toLocaleDateString(), price: product.currency === 'INR' ? `${product.price?.toLocaleString() ?? '-'} ₹` : `${product.currency} ${product.price?.toLocaleString() ?? '-'}`, status: 'Current', isCurrent: true }
       ],
       quote: {
         author: sellerName,
@@ -133,7 +133,9 @@ export default function RecentlyAnalyzed({ totalProducts: initialTotal = 0 }: Re
                       </div>
                     </td>
                     <td className="px-6 py-4 text-center">
-                      <span className="text-sm font-bold text-slate-800">{product.currency} {product.price}</span>
+                      <span className="text-sm font-bold text-slate-800">
+                        {product.currency === 'INR' ? `${product.price?.toLocaleString() ?? '0'} ₹` : `${product.currency} ${product.price?.toLocaleString() ?? '0'}`}
+                      </span>
                     </td>
                     <td className="px-6 py-4 text-center whitespace-nowrap">
                       <span className="text-sm font-medium text-slate-500">{dateLabel}</span>
