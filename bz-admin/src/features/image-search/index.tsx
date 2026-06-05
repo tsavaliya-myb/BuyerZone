@@ -169,7 +169,7 @@ export default function ImageSearch() {
   const handleExport = () => {
     if (!results || results.length === 0) return;
 
-    const headers = ['Product Image', 'Product Name', 'Seller / Channel', 'Price', 'Received At', 'Match Score'];
+    const headers = ['Product Image', 'Product Name', 'Seller / Channel', 'Platform', 'Price', 'Received At', 'Match Score'];
     const csvContent = [
       headers.join(','),
       ...results.map(result => {
@@ -181,11 +181,13 @@ export default function ImageSearch() {
         const priceLabel = result.currency === 'INR'
           ? `${result.price?.toLocaleString() ?? '0'} ₹`
           : `${result.currency} ${result.price?.toLocaleString() ?? '0'}`;
+        const platformLabel = result.platform || '';
 
         return [
           `"${result.image_url || ''}"`,
           `"${result.name?.replace(/"/g, '""') || ''}"`,
           `"${sellerName?.replace(/"/g, '""')}"`,
+          `"${platformLabel.replace(/"/g, '""')}"`,
           `"${priceLabel}"`,
           `"${dateLabel}"`,
           `"${scoreLabel}"`
@@ -419,6 +421,7 @@ export default function ImageSearch() {
                 <th className="px-6 py-4">Product Image</th>
                 <th className="px-6 py-4">Product Name</th>
                 <th className="px-6 py-4">Seller / Channel</th>
+                <th className="px-6 py-4">Platform</th>
                 <th className="px-6 py-4">Price</th>
                 {/* <th className="px-6 py-4">Phone</th> */}
                 <th className="px-6 py-4 text-center">Received At</th>
@@ -520,6 +523,21 @@ export default function ImageSearch() {
                     </td>
 
                     <td className="px-6 py-4 font-medium text-slate-600 text-sm">{sellerName}</td>
+                    <td className="px-6 py-4">
+                      {result.platform ? (
+                        <span className={`px-2.5 py-1 rounded-lg text-[10px] font-bold border uppercase tracking-wider ${
+                          result.platform.toLowerCase() === 'telegram'
+                            ? 'bg-blue-50 text-blue-600 border-blue-100'
+                            : result.platform.toLowerCase() === 'whatsapp'
+                            ? 'bg-emerald-50 text-emerald-600 border-emerald-100'
+                            : 'bg-slate-50 text-slate-600 border-slate-100'
+                        }`}>
+                          {result.platform}
+                        </span>
+                      ) : (
+                        <span className="text-slate-400 font-medium">-</span>
+                      )}
+                    </td>
                     <td className="px-6 py-4 text-sm font-bold text-primary">
                       {result.currency === 'INR' ? `${result.price?.toLocaleString() ?? '0'} ₹` : `${result.currency} ${result.price?.toLocaleString() ?? '0'}`}
                     </td>
