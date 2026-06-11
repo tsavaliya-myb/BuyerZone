@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import time
 import uuid
 
@@ -50,14 +52,27 @@ async def search_by_image(vector: list[float], page: int, size: int, db: AsyncSe
 
 async def search_by_text(query: str, page: int, size: int, db: AsyncSession) -> SearchResponse:
     t0 = time.perf_counter()
-    pattern = f"%{query}%"
 
-    from sqlalchemy import func
+    from sqlalchemy import and_, func
+
+    # Split query into individual words and require ALL words to match
+    # in either name or raw_caption. This ensures "3 in 1 tiles brush"
+    # also matches "3 IN 1 WHITE + ORANGE BRUSH" etc.
+    words = query.strip().split()
+    word_conditions = []
+    for word in words:
+        word_pattern = f"%{word}%"
+        word_conditions.append(
+            or_(Product.name.ilike(word_pattern), Product.raw_caption.ilike(word_pattern))
+        )
+
+    # All words must be present (AND logic)
+    text_filter = and_(*word_conditions) if word_conditions else Product.name.ilike(f"%{query}%")
 
     total_result = await db.execute(
         select(func.count(Product.id)).where(
             Product.status == "active",
-            or_(Product.name.ilike(pattern), Product.raw_caption.ilike(pattern)),
+            text_filter,
         )
     )
     total = total_result.scalar_one()
@@ -69,7 +84,7 @@ async def search_by_text(query: str, page: int, size: int, db: AsyncSession) -> 
         .options(selectinload(Product.wholesaler))
         .where(
             Product.status == "active",
-            or_(Product.name.ilike(pattern), Product.raw_caption.ilike(pattern)),
+            text_filter,
         )
         .offset(offset)
         .limit(size)
@@ -136,12 +151,22 @@ async def search_combined(
 
     # Keyword supplement: products matching name/raw_caption that may not rank in Qdrant
     if text_query:
-        pattern = f"%{text_query}%"
+        from sqlalchemy import and_ as sa_and
+
+        kw_words = text_query.strip().split()
+        kw_word_conditions = []
+        for word in kw_words:
+            wp = f"%{word}%"
+            kw_word_conditions.append(
+                or_(Product.name.ilike(wp), Product.raw_caption.ilike(wp))
+            )
+        kw_filter = sa_and(*kw_word_conditions) if kw_word_conditions else Product.name.ilike(f"%{text_query}%")
+
         kw_result = await db.execute(
             select(Product.id)
             .where(
                 Product.status == "active",
-                or_(Product.name.ilike(pattern), Product.raw_caption.ilike(pattern)),
+                kw_filter,
             )
             .limit(fetch_k)
         )
@@ -153,14 +178,15 @@ async def search_combined(
 
     product_ids_from_qdrant: list[str] = []
     if sorted_qdrant_ids:
+        retrieved = await client.retrieve(
+            collection_name=settings.qdrant_collection,
+            ids=sorted_qdrant_ids,
+            with_payload=True,
+        )
         product_ids_from_qdrant = [
-            r.payload.get("product_id")
-            for r in await client.retrieve(
-                collection_name=settings.qdrant_collection,
-                ids=sorted_qdrant_ids,
-                with_payload=True,
-            )
-            if r.payload
+            str(r.payload["product_id"])
+            for r in retrieved
+            if r.payload and "product_id" in r.payload
         ]
 
     # Merge: give qdrant hits their vector score; add keyword-only hits with text_weight
@@ -233,7 +259,7 @@ async def _enrich(qdrant_results, db: AsyncSession) -> list[SearchResultItem]:
     return items
 
 
-async def _load_chats(products: list[Product], db: AsyncSession) -> dict[str, MonitoredChat]:
+async def _load_chats(products: Sequence[Product], db: AsyncSession) -> dict[str, MonitoredChat]:
     chat_ids = {p.chat_id for p in products if p.chat_id}
     if not chat_ids:
         return {}

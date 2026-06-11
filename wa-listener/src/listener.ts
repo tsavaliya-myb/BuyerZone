@@ -47,6 +47,12 @@ const ctx: ListenerContext = {
 /** Consecutive reconnect attempts — drives exponential backoff. */
 let reconnectAttempts = 0;
 
+/**
+ * After this many consecutive failures we give up and move to requires_repair
+ * rather than retrying forever with a likely-dead session (e.g. persistent 408).
+ */
+const MAX_RECONNECT_ATTEMPTS = 10;
+
 export function getState(): ListenerState {
   return ctx.state;
 }
@@ -158,8 +164,22 @@ export async function startBot(
         // Transient — reconnect with exponential backoff.
         // 515 (restartRequired) is WA's normal ack after code entry; reconnecting
         // with the current auth state completes the pairing handshake.
-        ctx.state = "disconnected";
         reconnectAttempts++;
+
+        if (reconnectAttempts > MAX_RECONNECT_ATTEMPTS) {
+          // Too many consecutive failures — the session is likely dead/revoked.
+          // Stop retrying and surface for admin intervention instead of looping
+          // forever (e.g. persistent 408 with a stale DB session).
+          ctx.state = "requires_repair";
+          ctx.sock = null;
+          log.warn(
+            { code, attempt: reconnectAttempts },
+            "wa_max_reconnects_exceeded — session appears dead. Re-pair via admin panel."
+          );
+          return;
+        }
+
+        ctx.state = "disconnected";
         const backoffMs = Math.min(3000 * Math.pow(2, reconnectAttempts - 1), 60000);
         log.info({ code, attempt: reconnectAttempts, backoffMs }, "wa_reconnecting");
         const current = serialiseAuthState();
