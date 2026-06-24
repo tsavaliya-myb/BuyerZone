@@ -53,13 +53,12 @@ export default function Dashboard() {
         {/* Telegram Status */}
         <div className="bg-white rounded-[24px] p-6 border border-slate-100 shadow-sm flex items-center justify-between">
           <div className="flex items-center gap-4">
-            <div className={`w-12 h-12 rounded-2xl flex items-center justify-center shadow-lg transition-all ${
-              loading 
-                ? 'bg-slate-50 text-slate-300 animate-pulse' 
-                : tgStatus?.connected 
-                  ? 'bg-[#229ED9] shadow-[#229ED9]/20 text-white' 
-                  : 'bg-slate-100 text-slate-400'
-            }`}>
+            <div className={`w-12 h-12 rounded-2xl flex items-center justify-center shadow-lg transition-all ${loading
+              ? 'bg-slate-50 text-slate-300 animate-pulse'
+              : tgStatus?.connected
+                ? 'bg-[#229ED9] shadow-[#229ED9]/20 text-white'
+                : 'bg-slate-100 text-slate-400'
+              }`}>
               <Send size={24} />
             </div>
             <div>
@@ -90,13 +89,12 @@ export default function Dashboard() {
         {/* WhatsApp Status */}
         <div className="bg-white rounded-[24px] p-6 border border-slate-100 shadow-sm flex items-center justify-between">
           <div className="flex items-center gap-4">
-            <div className={`w-12 h-12 rounded-2xl flex items-center justify-center shadow-lg transition-all ${
-              loading 
-                ? 'bg-slate-50 text-slate-300 animate-pulse' 
-                : waStatus?.state === 'connected' 
-                  ? 'bg-[#25D366] shadow-[#25D366]/20 text-white' 
-                  : 'bg-slate-100 text-slate-400'
-            }`}>
+            <div className={`w-12 h-12 rounded-2xl flex items-center justify-center shadow-lg transition-all ${loading
+              ? 'bg-slate-50 text-slate-300 animate-pulse'
+              : waStatus?.state === 'connected'
+                ? 'bg-[#25D366] shadow-[#25D366]/20 text-white'
+                : 'bg-slate-100 text-slate-400'
+              }`}>
               <MessageCircle size={24} />
             </div>
             <div>
@@ -127,17 +125,17 @@ export default function Dashboard() {
 
       {/* Stats Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
-        <StatCard 
-          label="Total Products" 
-          value={loading ? "..." : (stats?.total_products?.toLocaleString() || "0")} 
-          icon={LayoutDashboard} 
+        <StatCard
+          label="Total Products"
+          value={loading ? "..." : (stats?.total_products?.toLocaleString() || "0")}
+          icon={LayoutDashboard}
           iconColor="text-blue-600"
           iconBg="bg-blue-50"
         />
-        <StatCard 
-          label="Total Sellers" 
-          value={loading ? "..." : (( (stats?.total_wholesalers || 0) + (stats?.active_chats || 0) ).toLocaleString())} 
-          icon={Users} 
+        <StatCard
+          label="Total Sellers"
+          value={loading ? "..." : ((stats?.active_chats || 0).toLocaleString())}
+          icon={Users}
           iconColor="text-purple-600"
           iconBg="bg-purple-50"
         />
