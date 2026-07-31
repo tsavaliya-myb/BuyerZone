@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse
 from app.config import get_settings
 from app.core.database import engine
 from app.core.exceptions import BuyerzoneError, buyerzone_exception_handler
-from app.core.qdrant import close_qdrant_client, ensure_collection
+from app.core.qdrant import close_qdrant_client, ensure_collection, ensure_inhouse_collection
 from app.core.redis import close_arq_pool, close_redis
 
 from app.core.logging_config import configure_logging
@@ -24,9 +24,11 @@ async def lifespan(app: FastAPI):
     # ── Startup ──────────────────────────────────────────────────────────────
     log.info("startup_begin", environment=settings.environment)
 
-    # Ensure Qdrant collection exists
+    # Ensure Qdrant collections exist
     await ensure_collection()
     log.info("qdrant_collection_ready", collection=settings.qdrant_collection)
+    await ensure_inhouse_collection()
+    log.info("qdrant_inhouse_collection_ready", collection=settings.qdrant_inhouse_collection)
 
     # Hydrate in-memory whitelist from DB
     from app.services.chat_resolver import load_whitelist_from_db

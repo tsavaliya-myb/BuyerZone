@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     qdrant_host: str = "localhost"
     qdrant_port: int = 6333
     qdrant_collection: str = "product_embeddings"
+    qdrant_inhouse_collection: str = "inhouse_product_embeddings"
     qdrant_url: str | None = None  # cloud URL overrides host+port when set
     qdrant_cluster_endpoint: str | None = None  # alias some dashboards export
     qdrant_api_key: str | None = None

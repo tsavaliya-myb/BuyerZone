@@ -1,11 +1,16 @@
+import asyncio
 import uuid
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from qdrant_client.models import PointIdsList, PointStruct
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.config import get_settings
+from app.core.clip import embed_image
 from app.core.database import get_db
+from app.core.qdrant import get_qdrant_client
 from app.core.security import require_admin
 from app.models.inhouse_product import InHouseProduct
 from app.models.inhouse_product_photo import InHouseProductPhoto
@@ -17,8 +22,12 @@ from app.schemas.inhouse_product import (
 from app.services.storage import delete_inhouse_photo, upload_inhouse_photo
 
 router = APIRouter(prefix="/admin/inhouse-products", tags=["inhouse-products"])
+settings = get_settings()
 
 MAX_PHOTOS_PER_PRODUCT = 10
+
+# (photo_id, url, key, embedding_vector) — carried between upload, embed, and index steps
+_UploadedPhoto = tuple[uuid.UUID, str, str, list[float]]
 
 
 def _validate_image(data: bytes) -> bool:
@@ -32,6 +41,60 @@ def _validate_image(data: bytes) -> bool:
 
 def _parse_keywords(keywords: str) -> list[str]:
     return [k.strip() for k in keywords.split(",") if k.strip()]
+
+
+async def _embed_photo(image_bytes: bytes) -> list[float]:
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, embed_image, image_bytes)
+
+
+async def _process_photo_uploads(
+    photos: list[UploadFile], product_id: uuid.UUID
+) -> list[_UploadedPhoto]:
+    """Validate, upload to R2, and embed each photo. Cleans up any R2 uploads made
+    so far if a later photo in the batch fails validation or embedding."""
+    uploaded: list[_UploadedPhoto] = []
+    try:
+        for photo in photos:
+            image_bytes = await photo.read()
+            if not _validate_image(image_bytes):
+                raise HTTPException(status_code=400, detail=f"Invalid image file: {photo.filename}")
+            url, key = upload_inhouse_photo(image_bytes, product_id, photo.content_type or "image/jpeg")
+            try:
+                vector = await _embed_photo(image_bytes)
+            except Exception as exc:
+                delete_inhouse_photo(key)
+                raise HTTPException(status_code=500, detail="Failed to generate image embedding") from exc
+            uploaded.append((uuid.uuid4(), url, key, vector))
+    except HTTPException:
+        for _, _, key, _ in uploaded:
+            delete_inhouse_photo(key)
+        raise
+    return uploaded
+
+
+async def _index_photos(product_id: uuid.UUID, status: str, uploaded: list[_UploadedPhoto]) -> None:
+    """Upsert embeddings for a batch of already-uploaded photos. Rolls back their
+    R2 objects if Qdrant indexing fails, so we never persist a photo row with no vector."""
+    if not uploaded:
+        return
+    qdrant_client = get_qdrant_client()
+    try:
+        await qdrant_client.upsert(
+            collection_name=settings.qdrant_inhouse_collection,
+            points=[
+                PointStruct(
+                    id=str(photo_id),
+                    vector=vector,
+                    payload={"product_id": str(product_id), "status": status},
+                )
+                for photo_id, _, _, vector in uploaded
+            ],
+        )
+    except Exception as exc:
+        for _, _, key, _ in uploaded:
+            delete_inhouse_photo(key)
+        raise HTTPException(status_code=500, detail="Failed to index image embeddings") from exc
 
 
 async def _get_or_404(db: AsyncSession, product_id: uuid.UUID) -> InHouseProduct:
@@ -69,12 +132,11 @@ async def create_inhouse_product(
     db.add(product)
     await db.flush()
 
-    for position, photo in enumerate(photos):
-        image_bytes = await photo.read()
-        if not _validate_image(image_bytes):
-            raise HTTPException(status_code=400, detail=f"Invalid image file: {photo.filename}")
-        url, key = upload_inhouse_photo(image_bytes, product.id, photo.content_type or "image/jpeg")
-        db.add(InHouseProductPhoto(product_id=product.id, url=url, key=key, position=position))
+    uploaded = await _process_photo_uploads(photos, product.id)
+    await _index_photos(product.id, "active", uploaded)
+
+    for position, (photo_id, url, key, _) in enumerate(uploaded):
+        db.add(InHouseProductPhoto(id=photo_id, product_id=product.id, url=url, key=key, position=position))
 
     await db.commit()
     return await _get_or_404(db, product.id)
@@ -134,8 +196,20 @@ async def update_inhouse_product(
     _=Depends(require_admin),
 ):
     product = await _get_or_404(db, product_id)
-    for field, value in body.model_dump(exclude_unset=True).items():
+    changes = body.model_dump(exclude_unset=True)
+    status_changed = "status" in changes and changes["status"] != product.status
+    for field, value in changes.items():
         setattr(product, field, value)
+
+    # Mirror status to Qdrant payloads, same pattern as update_product_status in products.py
+    if status_changed and product.photos:
+        qdrant_client = get_qdrant_client()
+        await qdrant_client.set_payload(
+            collection_name=settings.qdrant_inhouse_collection,
+            payload={"status": product.status},
+            points=[str(p.id) for p in product.photos],
+        )
+
     await db.commit()
     return await _get_or_404(db, product_id)
 
@@ -147,8 +221,14 @@ async def delete_inhouse_product(
     _=Depends(require_admin),
 ):
     product = await _get_or_404(db, product_id)
-    for photo in product.photos:
-        delete_inhouse_photo(photo.key)
+    if product.photos:
+        qdrant_client = get_qdrant_client()
+        await qdrant_client.delete(
+            collection_name=settings.qdrant_inhouse_collection,
+            points_selector=PointIdsList(points=[str(p.id) for p in product.photos]),
+        )
+        for photo in product.photos:
+            delete_inhouse_photo(photo.key)
     await db.delete(product)
     await db.commit()
 
@@ -166,15 +246,14 @@ async def add_inhouse_product_photos(
             status_code=400, detail=f"Max {MAX_PHOTOS_PER_PRODUCT} photos per product"
         )
 
+    uploaded = await _process_photo_uploads(photos, product.id)
+    await _index_photos(product.id, product.status, uploaded)
+
     next_position = len(product.photos)
-    for offset, photo in enumerate(photos):
-        image_bytes = await photo.read()
-        if not _validate_image(image_bytes):
-            raise HTTPException(status_code=400, detail=f"Invalid image file: {photo.filename}")
-        url, key = upload_inhouse_photo(image_bytes, product.id, photo.content_type or "image/jpeg")
+    for offset, (photo_id, url, key, _) in enumerate(uploaded):
         db.add(
             InHouseProductPhoto(
-                product_id=product.id, url=url, key=key, position=next_position + offset
+                id=photo_id, product_id=product.id, url=url, key=key, position=next_position + offset
             )
         )
 
@@ -198,6 +277,11 @@ async def delete_inhouse_product_photo(
     if not photo:
         raise HTTPException(status_code=404, detail="Photo not found")
 
+    qdrant_client = get_qdrant_client()
+    await qdrant_client.delete(
+        collection_name=settings.qdrant_inhouse_collection,
+        points_selector=PointIdsList(points=[str(photo.id)]),
+    )
     delete_inhouse_photo(photo.key)
     await db.delete(photo)
     await db.commit()

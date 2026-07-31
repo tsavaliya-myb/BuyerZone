@@ -59,6 +59,27 @@ async def ensure_collection() -> None:
     )
 
 
+async def ensure_inhouse_collection() -> None:
+    client = get_qdrant_client()
+    existing = await client.get_collections()
+    names = [c.name for c in existing.collections]
+    if settings.qdrant_inhouse_collection not in names:
+        await client.create_collection(
+            collection_name=settings.qdrant_inhouse_collection,
+            vectors_config=VectorParams(size=VECTOR_SIZE, distance=Distance.COSINE),
+        )
+    await client.create_payload_index(
+        collection_name=settings.qdrant_inhouse_collection,
+        field_name="status",
+        field_schema=PayloadSchemaType.KEYWORD,
+    )
+    await client.create_payload_index(
+        collection_name=settings.qdrant_inhouse_collection,
+        field_name="product_id",
+        field_schema=PayloadSchemaType.KEYWORD,
+    )
+
+
 async def close_qdrant_client() -> None:
     global _client
     if _client is not None:
