@@ -3,6 +3,7 @@ import Dashboard from "@/features/dashboard";
 import ImageSearch from "@/features/image-search";
 import Analysis from "@/features/analysis";
 import Sellers from "@/features/sellers";
+import Products from "@/features/products";
 import Export from "@/features/export";
 import Notifications from "@/features/notifications";
 import Login from "@/features/auth";
@@ -38,6 +39,10 @@ export const router = createBrowserRouter([
       {
         path: "/sellers",
         element: <Sellers />,
+      },
+      {
+        path: "/products",
+        element: <Products />,
       },
       {
         path: "/export",

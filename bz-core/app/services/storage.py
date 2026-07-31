@@ -56,3 +56,33 @@ def delete_image(key: str) -> None:
         client.delete_object(Bucket=settings.s3_bucket_name, Key=key)
     except (BotoCoreError, ClientError) as exc:
         log.warning("s3_delete_failed", key=key, error=str(exc))
+
+
+def upload_inhouse_photo(image_bytes: bytes, product_id: uuid.UUID, content_type: str) -> tuple[str, str]:
+    """Upload an in-house product photo to the dedicated R2 bucket. Returns (public_url, object_key)."""
+    ext = "png" if content_type == "image/png" else "jpg"
+    key = f"inhouse-products/{product_id}/{uuid.uuid4()}.{ext}"
+
+    client = _get_client()
+    try:
+        client.put_object(
+            Bucket=settings.s3_inhouse_bucket_name,
+            Key=key,
+            Body=image_bytes,
+            ContentType=content_type,
+        )
+    except (BotoCoreError, ClientError) as exc:
+        log.error("s3_inhouse_upload_failed", key=key, error=str(exc))
+        raise StorageUploadError(f"S3 upload failed: {exc}") from exc
+
+    proxy_url = f"{settings.api_base_url}/media/{key}"
+    log.info("inhouse_photo_uploaded", key=key)
+    return proxy_url, key
+
+
+def delete_inhouse_photo(key: str) -> None:
+    client = _get_client()
+    try:
+        client.delete_object(Bucket=settings.s3_inhouse_bucket_name, Key=key)
+    except (BotoCoreError, ClientError) as exc:
+        log.warning("s3_inhouse_delete_failed", key=key, error=str(exc))

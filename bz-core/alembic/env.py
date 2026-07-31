@@ -10,7 +10,15 @@ from app.config import get_settings
 from app.core.database import Base
 
 # Import all models so Alembic detects them
-from app.models import AdminUser, IngestionLog, MonitoredChat, Product, Wholesaler  # noqa: F401
+from app.models import (  # noqa: F401
+    AdminUser,
+    InHouseProduct,
+    InHouseProductPhoto,
+    IngestionLog,
+    MonitoredChat,
+    Product,
+    Wholesaler,
+)
 
 config = context.config
 

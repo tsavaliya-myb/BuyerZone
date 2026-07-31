@@ -13,24 +13,28 @@ from app.services.storage import _get_client
 router = APIRouter(tags=["media"])
 settings = get_settings()
 
-ALLOWED_PREFIXES = {"products"}
+PREFIX_BUCKETS = {
+    "products": settings.s3_bucket_name,
+    "inhouse-products": settings.s3_inhouse_bucket_name,
+}
 _executor = ThreadPoolExecutor(max_workers=4)
 
 
-def _fetch_object(key: str):
+def _fetch_object(key: str, bucket: str):
     client = _get_client()
-    return client.get_object(Bucket=settings.s3_bucket_name, Key=key)
+    return client.get_object(Bucket=bucket, Key=key)
 
 
 @router.get("/media/{prefix}/{rest:path}", include_in_schema=False)
 async def serve_media(prefix: str, rest: str):
-    if prefix not in ALLOWED_PREFIXES:
+    bucket = PREFIX_BUCKETS.get(prefix)
+    if not bucket:
         raise HTTPException(status_code=404)
 
     key = f"{prefix}/{rest}"
     loop = asyncio.get_event_loop()
     try:
-        obj = await loop.run_in_executor(_executor, _fetch_object, key)
+        obj = await loop.run_in_executor(_executor, _fetch_object, key, bucket)
     except ClientError as exc:
         code = exc.response["Error"]["Code"]
         raise HTTPException(status_code=404 if code in ("NoSuchKey", "404") else 502) from None

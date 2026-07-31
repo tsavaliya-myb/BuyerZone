@@ -1,4 +1,4 @@
-import { LayoutDashboard, Image, Users, LogOut } from 'lucide-react';
+import { LayoutDashboard, Image, Users, Package, LogOut } from 'lucide-react';
 import { NavLink } from 'react-router-dom';
 import { useUIStore } from '@/store/uiStore';
 import { authService } from '@/services/auth';
@@ -8,6 +8,7 @@ const menuItems = [
   { icon: Image, label: 'Image Search', path: '/image-search' },
   // { icon: BarChart3, label: 'Analysis', path: '/analysis' },
   { icon: Users, label: 'Sellers', path: '/sellers' },
+  { icon: Package, label: 'Products', path: '/products' },
   // { icon: Download, label: 'Export', path: '/export' },
 ];
 

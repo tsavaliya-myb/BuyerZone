@@ -74,6 +74,7 @@ def create_app() -> FastAPI:
 
     # ── Routers ───────────────────────────────────────────────────────────────
     from app.api.v1.admin import router as admin_router
+    from app.api.v1.inhouse_products import router as inhouse_products_router
     from app.api.v1.internal import router as internal_router
     from app.api.v1.media import router as media_router
     from app.api.v1.products import router as products_router
@@ -89,6 +90,7 @@ def create_app() -> FastAPI:
     app.include_router(whatsapp_admin_router, prefix=prefix)
     app.include_router(search_router, prefix=prefix)
     app.include_router(products_router, prefix=prefix)
+    app.include_router(inhouse_products_router, prefix=prefix)
     app.include_router(internal_router, prefix=prefix)
 
     @app.get("/health", tags=["health"])
