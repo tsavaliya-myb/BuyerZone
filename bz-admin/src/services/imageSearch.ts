@@ -47,4 +47,11 @@ export const imageSearchService = {
     );
     return response.data;
   },
+
+  searchFromInhouseProduct: async (inhouseProductId: string, page: number = 1, size: number = 10): Promise<ImageSearchResponse> => {
+    const response = await api.get<ImageSearchResponse>(
+      `search/from-inhouse-product?inhouse_product_id=${inhouseProductId}&page=${page}&size=${size}`
+    );
+    return response.data;
+  },
 };

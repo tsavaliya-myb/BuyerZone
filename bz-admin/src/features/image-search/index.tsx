@@ -1,17 +1,19 @@
-import { useRef, useState, type ChangeEvent } from 'react';
+import { useEffect, useRef, useState, type ChangeEvent } from 'react';
 import {
   UploadCloud, Filter, Download, ChevronLeft, ChevronRight,
-  Loader2, AlertCircle, ImageOff, Zap, Clock, Search, Type
+  Loader2, AlertCircle, ImageOff, Zap, Clock, Search, Type, Plus
 } from 'lucide-react';
 import MainLayout from '@/components/layout/MainLayout';
 import { useUIStore } from '@/store/uiStore';
 import { imageSearchService, type ImageSearchResult } from '@/services/imageSearch';
+import { inhouseProductsService, type InHouseProductSuggestion } from '@/services/inhouseProducts';
 
 type SearchMode = 'visual' | 'text';
 
 export default function ImageSearch() {
-  const { openProductModal } = useUIStore();
+  const { openProductModal, openAddProductModal } = useUIStore();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const suggestDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [searchMode, setSearchMode] = useState<SearchMode>('visual');
   const [textQuery, setTextQuery] = useState('');
@@ -35,6 +37,82 @@ export default function ImageSearch() {
     hasSearched: false,
     error: null as string | null
   });
+
+  const [suggestions, setSuggestions] = useState<InHouseProductSuggestion[]>([]);
+  const [isSuggesting, setIsSuggesting] = useState(false);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+
+  // Typeahead against in-house products — fires once the query is 3+ characters
+  useEffect(() => {
+    if (searchMode !== 'text') return;
+    if (suggestDebounceRef.current) clearTimeout(suggestDebounceRef.current);
+
+    const trimmed = textQuery.trim();
+    if (trimmed.length < 3) {
+      setSuggestions([]);
+      setIsSuggesting(false);
+      setShowSuggestions(false);
+      return;
+    }
+
+    setIsSuggesting(true);
+    setShowSuggestions(true);
+    suggestDebounceRef.current = setTimeout(async () => {
+      try {
+        const data = await inhouseProductsService.suggest(trimmed, 8);
+        setSuggestions(data);
+      } catch (err) {
+        console.error('Suggest error:', err);
+        setSuggestions([]);
+      } finally {
+        setIsSuggesting(false);
+      }
+    }, 250);
+
+    return () => {
+      if (suggestDebounceRef.current) clearTimeout(suggestDebounceRef.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [textQuery, searchMode]);
+
+  const handleSelectSuggestion = async (suggestion: InHouseProductSuggestion) => {
+    setShowSuggestions(false);
+    setIsSearching(true);
+    setTextSearch(prev => ({ ...prev, error: null, hasSearched: false }));
+    try {
+      const response = await imageSearchService.searchFromInhouseProduct(suggestion.id, 1, 10);
+      setTextSearch({
+        results: response.results,
+        total: response.total,
+        page: 1,
+        queryTime: response.query_time_ms,
+        hasSearched: true,
+        error: null,
+      });
+    } catch (err: any) {
+      console.error('Cross-search error:', err);
+      const data = err.response?.data;
+      const msg = data?.detail || data?.message || data?.error || (typeof data === 'string' ? data : null);
+      setTextSearch(prev => ({
+        ...prev,
+        error: msg || 'Failed to search matching products.',
+        hasSearched: true,
+      }));
+    } finally {
+      setIsSearching(false);
+    }
+  };
+
+  const handleAddNewProductClick = () => {
+    setShowSuggestions(false);
+    openAddProductModal(() => {
+      const trimmed = textQuery.trim();
+      if (trimmed.length >= 3) {
+        inhouseProductsService.suggest(trimmed, 8).then(setSuggestions).catch(() => {});
+        setShowSuggestions(true);
+      }
+    });
+  };
 
   const currentSearch = searchMode === 'visual' ? visualSearch : textSearch;
   const { results, total, page, queryTime, hasSearched, error } = currentSearch;
@@ -356,6 +434,8 @@ export default function ImageSearch() {
                 value={textQuery}
                 onChange={(e) => setTextQuery(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && handleTextSearch(1)}
+                onFocus={() => { if (textQuery.trim().length >= 3) setShowSuggestions(true); }}
+                onBlur={() => setTimeout(() => setShowSuggestions(false), 150)}
                 className="block w-full pl-14 pr-28 py-4 bg-slate-50 border-2 border-slate-100 rounded-2xl text-base font-bold text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-8 focus:ring-primary/5 focus:border-primary focus:bg-white transition-all shadow-sm"
                 autoFocus
               />
@@ -367,6 +447,46 @@ export default function ImageSearch() {
                 {isSearching ? <Loader2 size={14} className="animate-spin" /> : <Zap size={14} />}
                 {isSearching ? 'Searching...' : 'Search'}
               </button>
+
+              {showSuggestions && (
+                <div className="absolute left-0 right-0 top-full mt-2 bg-white rounded-2xl shadow-xl border border-slate-100 overflow-hidden z-20 text-left">
+                  {isSuggesting ? (
+                    <div className="p-4 flex items-center gap-2 text-slate-400 text-sm font-medium">
+                      <Loader2 size={16} className="animate-spin" /> Searching in-house products...
+                    </div>
+                  ) : suggestions.length > 0 ? (
+                    <ul className="max-h-72 overflow-y-auto divide-y divide-slate-50">
+                      {suggestions.map((s) => (
+                        <li
+                          key={s.id}
+                          onMouseDown={() => handleSelectSuggestion(s)}
+                          className="flex items-center gap-3 px-4 py-3 hover:bg-slate-50 cursor-pointer transition-colors"
+                        >
+                          <div className="w-9 h-9 rounded-lg bg-slate-100 overflow-hidden border border-slate-100 flex items-center justify-center flex-shrink-0">
+                            {s.thumbnail_url ? (
+                              <img src={s.thumbnail_url} alt={s.name} className="w-full h-full object-cover" />
+                            ) : (
+                              <ImageOff size={14} className="text-slate-300" />
+                            )}
+                          </div>
+                          <span className="text-sm font-bold text-slate-700">{s.name}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <div className="p-4 flex flex-col items-center gap-3">
+                      <p className="text-xs text-slate-400 font-medium">No matching in-house products found.</p>
+                      <button
+                        type="button"
+                        onMouseDown={handleAddNewProductClick}
+                        className="flex items-center gap-2 px-4 py-2 bg-primary text-white rounded-xl text-xs font-bold hover:bg-primary-dark transition-all"
+                      >
+                        <Plus size={14} /> Add New Product
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
 
             <div className="mt-8 flex items-center gap-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">

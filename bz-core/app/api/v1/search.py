@@ -1,11 +1,15 @@
 import asyncio
 import base64
+import uuid
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.core.database import get_db
 from app.core.security import require_admin
+from app.models.inhouse_product import InHouseProduct
 from app.schemas.search import SearchResponse
 from app.services import search as search_svc
 
@@ -51,6 +55,26 @@ async def search_by_text(
     _=Depends(require_admin),
 ):
     return await search_svc.search_by_text(q, page, size, db)
+
+
+@router.get("/from-inhouse-product", response_model=SearchResponse)
+async def search_from_inhouse_product(
+    inhouse_product_id: uuid.UUID = Query(...),
+    page: int = Query(default=1, ge=1),
+    size: int = Query(default=10, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+    _=Depends(require_admin),
+):
+    result = await db.execute(
+        select(InHouseProduct)
+        .options(selectinload(InHouseProduct.photos))
+        .where(InHouseProduct.id == inhouse_product_id)
+    )
+    inhouse_product = result.scalar_one_or_none()
+    if not inhouse_product:
+        raise HTTPException(status_code=404, detail="In-house product not found")
+
+    return await search_svc.search_from_inhouse_product(inhouse_product, page, size, db)
 
 
 @router.post("/combined", response_model=SearchResponse)

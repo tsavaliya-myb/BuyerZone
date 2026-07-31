@@ -6,19 +6,25 @@ import time
 import uuid
 
 import structlog
-from qdrant_client.models import FieldCondition, Filter, MatchValue
+from qdrant_client.models import FieldCondition, Filter, MatchValue, QueryRequest
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.config import get_settings
 from app.core.qdrant import get_qdrant_client
+from app.models.inhouse_product import InHouseProduct
 from app.models.monitored_chat import MonitoredChat
 from app.models.product import Product
 from app.schemas.search import SearchResponse, SearchResultItem
 
 log = structlog.get_logger(__name__)
 settings = get_settings()
+
+# Fixed score given to a keyword-only match (no vector hit) when cross-searching
+# from an in-house product — kept below the 0.75 vector score_threshold so
+# keyword hits never outrank a real visual match, only fill gaps beside them.
+KEYWORD_MATCH_WEIGHT = 0.5
 
 
 async def search_by_image(vector: list[float], page: int, size: int, db: AsyncSession) -> SearchResponse:
@@ -239,6 +245,106 @@ async def _load_chats(products: list[Product], db: AsyncSession) -> dict[str, Mo
         return {}
     rows = await db.execute(select(MonitoredChat).where(MonitoredChat.chat_id.in_(chat_ids)))
     return {c.chat_id: c for c in rows.scalars().all()}
+
+
+async def search_from_inhouse_product(
+    inhouse_product: InHouseProduct, page: int, size: int, db: AsyncSession
+) -> SearchResponse:
+    """Cross-search: find ingested products visually/textually similar to an in-house product.
+
+    Queries once per photo vector, batched into a single Qdrant round trip via
+    query_batch_points, then max-pools the score per candidate ingested product
+    across all photo queries — the best-matching photo wins. Averaging the
+    vectors instead would risk a centroid that matches none of the individual
+    photos well when they differ by angle/color; summing scores would unfairly
+    reward products that partially match many photos over one true best match.
+    """
+    t0 = time.perf_counter()
+    client = get_qdrant_client()
+    fetch_k = 100
+    active_filter = Filter(must=[FieldCondition(key="status", match=MatchValue(value="active"))])
+
+    scores: dict[str, float] = {}
+    if inhouse_product.photos:
+        photo_ids = [str(p.id) for p in inhouse_product.photos]
+        records = await client.retrieve(
+            collection_name=settings.qdrant_inhouse_collection,
+            ids=photo_ids,
+            with_vectors=True,
+        )
+        vectors = [r.vector for r in records if r.vector]
+
+        if vectors:
+            batch_responses = await client.query_batch_points(
+                collection_name=settings.qdrant_collection,
+                requests=[
+                    QueryRequest(
+                        query=vector,
+                        filter=active_filter,
+                        limit=fetch_k,
+                        score_threshold=settings.search_similarity_threshold,
+                        with_payload=True,
+                    )
+                    for vector in vectors
+                ],
+            )
+            for response in batch_responses:
+                for r in response.points:
+                    pid = r.payload.get("product_id") if r.payload else None
+                    if not pid:
+                        continue
+                    scores[pid] = max(scores.get(pid, 0.0), r.score)
+
+    # Keyword supplement — always runs alongside the vector search, fills in
+    # gaps only (never stacks on top of an existing vector score).
+    keyword_scores: dict[str, float] = {}
+    if inhouse_product.keywords:
+        conditions = []
+        for kw in inhouse_product.keywords:
+            pattern = f"%{kw}%"
+            conditions.append(Product.name.ilike(pattern))
+            conditions.append(Product.raw_caption.ilike(pattern))
+        kw_result = await db.execute(
+            select(Product.id).where(Product.status == "active", or_(*conditions)).limit(fetch_k)
+        )
+        for (pid,) in kw_result.all():
+            keyword_scores[str(pid)] = KEYWORD_MATCH_WEIGHT
+
+    merged = dict(scores)
+    for pid, kw_score in keyword_scores.items():
+        if pid not in merged:
+            merged[pid] = kw_score
+
+    if not merged:
+        return SearchResponse(
+            results=[],
+            total=0,
+            query_time_ms=round((time.perf_counter() - t0) * 1000, 2),
+            page=page,
+            size=size,
+        )
+
+    offset = (page - 1) * size
+    sorted_pids = sorted(merged, key=lambda k: merged[k], reverse=True)[offset : offset + size]
+    total_matches = len(merged)
+
+    result = await db.execute(
+        select(Product)
+        .options(selectinload(Product.wholesaler))
+        .where(Product.id.in_([uuid.UUID(pid) for pid in sorted_pids]))
+    )
+    products_map = {str(p.id): p for p in result.scalars().all()}
+    chats = await _load_chats(list(products_map.values()), db)
+    items = [
+        _product_to_result(products_map[pid], merged[pid], chats)
+        for pid in sorted_pids
+        if pid in products_map
+    ]
+
+    elapsed_ms = (time.perf_counter() - t0) * 1000
+    return SearchResponse(
+        results=items, total=total_matches, query_time_ms=round(elapsed_ms, 2), page=page, size=size
+    )
 
 
 def _product_to_result(

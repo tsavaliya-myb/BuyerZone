@@ -4,6 +4,7 @@ import Navbar from './Navbar';
 import SettingsDrawer from './SettingsDrawer';
 import ProductDetailModal from '../modals/ProductDetailModal';
 import AddSellerModal from '../modals/AddSellerModal';
+import AddInHouseProductModal from '../modals/AddInHouseProductModal';
 import TelegramConnectModal from '../messaging/TelegramConnectModal';
 import WhatsappConnectModal from '../messaging/WhatsappConnectModal';
 import { useUIStore } from '@/store/uiStore';
@@ -74,6 +75,7 @@ export default function MainLayout({ children }: MainLayoutProps) {
       <SettingsDrawer />
       <ProductDetailModal />
       <AddSellerModal />
+      <AddInHouseProductModal />
       
       {/* Messaging Overlays */}
       <TelegramConnectModal 

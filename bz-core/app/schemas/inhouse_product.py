@@ -38,3 +38,10 @@ class InHouseProductUpdate(BaseModel):
     price: float | None = Field(default=None, gt=0)
     keywords: list[str] | None = None
     status: str | None = None
+
+
+class InHouseProductSuggestion(BaseModel):
+    id: uuid.UUID
+    name: str
+    price: float
+    thumbnail_url: str | None

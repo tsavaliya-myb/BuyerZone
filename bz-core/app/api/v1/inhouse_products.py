@@ -17,6 +17,7 @@ from app.models.inhouse_product_photo import InHouseProductPhoto
 from app.schemas.inhouse_product import (
     InHouseProductListResponse,
     InHouseProductResponse,
+    InHouseProductSuggestion,
     InHouseProductUpdate,
 )
 from app.services.storage import delete_inhouse_photo, upload_inhouse_photo
@@ -177,6 +178,38 @@ async def list_inhouse_products(
         page_size=page_size,
         pages=-(-total // page_size),
     )
+
+
+@router.get("/suggest", response_model=list[InHouseProductSuggestion])
+async def suggest_inhouse_products(
+    q: str = Query(..., min_length=3),
+    limit: int = Query(8, ge=1, le=20),
+    db: AsyncSession = Depends(get_db),
+    _=Depends(require_admin),
+):
+    result = await db.execute(
+        select(InHouseProduct)
+        .options(selectinload(InHouseProduct.photos))
+        .where(
+            InHouseProduct.status == "active",
+            or_(
+                InHouseProduct.name.ilike(f"%{q}%"),
+                InHouseProduct.keywords.any(q),
+            ),
+        )
+        .order_by(InHouseProduct.created_at.desc())
+        .limit(limit)
+    )
+    products = result.scalars().unique().all()
+    return [
+        InHouseProductSuggestion(
+            id=p.id,
+            name=p.name,
+            price=float(p.price),
+            thumbnail_url=p.photos[0].url if p.photos else None,
+        )
+        for p in products
+    ]
 
 
 @router.get("/{product_id}", response_model=InHouseProductResponse)

@@ -32,6 +32,13 @@ export interface InHouseProductUpdate {
   status?: string;
 }
 
+export interface InHouseProductSuggestion {
+  id: string;
+  name: string;
+  price: number;
+  thumbnail_url: string | null;
+}
+
 export const inhouseProductsService = {
   list: async (params: { keyword?: string; status?: string; page?: number; page_size?: number } = {}): Promise<InHouseProductListResponse> => {
     const response = await api.get<InHouseProductListResponse>("admin/inhouse-products", { params });
@@ -77,6 +84,13 @@ export const inhouseProductsService = {
 
   removePhoto: async (id: string, photoId: string): Promise<InHouseProduct> => {
     const response = await api.delete<InHouseProduct>(`admin/inhouse-products/${id}/photos/${photoId}`);
+    return response.data;
+  },
+
+  suggest: async (q: string, limit: number = 8): Promise<InHouseProductSuggestion[]> => {
+    const response = await api.get<InHouseProductSuggestion[]>('admin/inhouse-products/suggest', {
+      params: { q, limit },
+    });
     return response.data;
   },
 };

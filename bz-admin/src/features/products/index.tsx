@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from 'react';
+import { useEffect, useState, type ChangeEvent, type FormEvent } from 'react';
 import {
   Package, Search, Plus, ChevronLeft, ChevronRight, AlertTriangle,
-  Trash2, Edit2, X, UploadCloud, ImageOff, Loader2,
+  Trash2, Edit2, X, ImageOff, Loader2,
 } from 'lucide-react';
 import MainLayout from '@/components/layout/MainLayout';
 import {
@@ -18,24 +18,13 @@ interface PhotoDraft {
 }
 
 export default function Products() {
-  const { showToast } = useUIStore();
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const { showToast, openAddProductModal } = useUIStore();
 
   const [products, setProducts] = useState<InHouseProduct[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
   const [keyword, setKeyword] = useState('');
-
-  const [createModal, setCreateModal] = useState<{
-    isOpen: boolean;
-    name: string;
-    price: string;
-    keywords: string;
-    photos: PhotoDraft[];
-    isLoading: boolean;
-    error: string;
-  }>({ isOpen: false, name: '', price: '', keywords: '', photos: [], isLoading: false, error: '' });
 
   const [editModal, setEditModal] = useState<{
     isOpen: boolean;
@@ -76,47 +65,6 @@ export default function Products() {
   const handleSearch = (e: FormEvent) => {
     e.preventDefault();
     fetchProducts(1, keyword);
-  };
-
-  // ── Create ─────────────────────────────────────────────────────────────
-
-  const openCreateModal = () => {
-    setCreateModal({ isOpen: true, name: '', price: '', keywords: '', photos: [], isLoading: false, error: '' });
-  };
-
-  const handleCreatePhotosChange = (e: ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(e.target.files || []);
-    const drafts = files.map((file) => ({ file, previewUrl: URL.createObjectURL(file) }));
-    setCreateModal((prev) => ({ ...prev, photos: [...prev.photos, ...drafts] }));
-  };
-
-  const removeCreatePhoto = (index: number) => {
-    setCreateModal((prev) => ({ ...prev, photos: prev.photos.filter((_, i) => i !== index) }));
-  };
-
-  const handleCreateSubmit = async (e: FormEvent) => {
-    e.preventDefault();
-    const price = parseFloat(createModal.price);
-    if (!createModal.name.trim() || !price || price <= 0) {
-      setCreateModal((prev) => ({ ...prev, error: 'Name and a valid price are required' }));
-      return;
-    }
-
-    setCreateModal((prev) => ({ ...prev, isLoading: true, error: '' }));
-    try {
-      await inhouseProductsService.create({
-        name: createModal.name.trim(),
-        price,
-        keywords: createModal.keywords.split(',').map((k) => k.trim()).filter(Boolean),
-        photos: createModal.photos.map((p) => p.file),
-      });
-      showToast('Product created', 'success');
-      setCreateModal((prev) => ({ ...prev, isOpen: false }));
-      fetchProducts(1, keyword);
-    } catch (err: any) {
-      const msg = err.response?.data?.detail || err.message || 'Failed to create product';
-      setCreateModal((prev) => ({ ...prev, isLoading: false, error: typeof msg === 'string' ? msg : 'Failed to create product' }));
-    }
   };
 
   // ── Edit ───────────────────────────────────────────────────────────────
@@ -209,7 +157,7 @@ export default function Products() {
           <p className="text-sm text-slate-400 font-medium mt-1">Manage in-house products — name, price, photos and search keywords.</p>
         </div>
         <button
-          onClick={openCreateModal}
+          onClick={() => openAddProductModal(() => fetchProducts(1, keyword))}
           className="flex items-center gap-2 px-5 py-2.5 bg-primary text-white rounded-xl text-xs font-bold hover:bg-primary-dark transition-all shadow-lg shadow-primary/20"
         >
           <Plus size={16} /> Add Product
@@ -345,133 +293,6 @@ export default function Products() {
           </div>
         </div>
       </div>
-
-      {/* Create Modal */}
-      {createModal.isOpen && (
-        <div className="fixed inset-0 z-[150] flex items-center justify-center p-4">
-          <div
-            className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm animate-fade-in"
-            onClick={() => !createModal.isLoading && setCreateModal((prev) => ({ ...prev, isOpen: false }))}
-          />
-          <div className="bg-white rounded-[32px] shadow-2xl w-full max-w-lg relative animate-scale-in overflow-hidden max-h-[90vh] overflow-y-auto">
-            <div className="p-6 border-b border-slate-100 flex items-center justify-between bg-slate-50/50 sticky top-0">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center text-primary">
-                  <Plus size={20} />
-                </div>
-                <h2 className="text-xl font-bold text-slate-800">Add Product</h2>
-              </div>
-              <button
-                onClick={() => !createModal.isLoading && setCreateModal((prev) => ({ ...prev, isOpen: false }))}
-                className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-xl transition-colors"
-                disabled={createModal.isLoading}
-              >
-                <X size={20} />
-              </button>
-            </div>
-
-            <form onSubmit={handleCreateSubmit} className="p-8 space-y-5">
-              {createModal.error && (
-                <div className="p-3 bg-red-50 text-red-600 text-sm rounded-xl border border-red-100">{createModal.error}</div>
-              )}
-
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">Name</label>
-                <input
-                  type="text"
-                  value={createModal.name}
-                  onChange={(e) => setCreateModal((prev) => ({ ...prev, name: e.target.value }))}
-                  className="block w-full px-4 py-3 border border-slate-200 rounded-xl text-slate-800 focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary/50"
-                  required
-                  disabled={createModal.isLoading}
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">Price (₹)</label>
-                <input
-                  type="number"
-                  step="0.01"
-                  min="0"
-                  value={createModal.price}
-                  onChange={(e) => setCreateModal((prev) => ({ ...prev, price: e.target.value }))}
-                  className="block w-full px-4 py-3 border border-slate-200 rounded-xl text-slate-800 focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary/50"
-                  required
-                  disabled={createModal.isLoading}
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">Keywords</label>
-                <input
-                  type="text"
-                  value={createModal.keywords}
-                  onChange={(e) => setCreateModal((prev) => ({ ...prev, keywords: e.target.value }))}
-                  placeholder="e.g. wooden, toy, train"
-                  className="block w-full px-4 py-3 border border-slate-200 rounded-xl text-slate-800 focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary/50"
-                  disabled={createModal.isLoading}
-                />
-                <p className="text-[10px] text-slate-400 mt-1">Comma-separated. Used for search matching.</p>
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-2">Photos</label>
-                <input
-                  type="file"
-                  ref={fileInputRef}
-                  accept="image/*"
-                  multiple
-                  className="hidden"
-                  onChange={handleCreatePhotosChange}
-                />
-                <div
-                  onClick={() => fileInputRef.current?.click()}
-                  className="border-2 border-dashed border-slate-200 rounded-xl p-6 flex flex-col items-center justify-center text-center cursor-pointer hover:border-primary/50 transition-colors"
-                >
-                  <UploadCloud size={28} className="text-slate-400 mb-2" />
-                  <p className="text-xs font-medium text-slate-500">Click to upload photos (JPEG, PNG, WebP)</p>
-                </div>
-                {createModal.photos.length > 0 && (
-                  <div className="grid grid-cols-4 gap-2 mt-3">
-                    {createModal.photos.map((photo, i) => (
-                      <div key={i} className="relative aspect-square rounded-lg overflow-hidden border border-slate-100 group">
-                        <img src={photo.previewUrl} alt="" className="w-full h-full object-cover" />
-                        <button
-                          type="button"
-                          onClick={() => removeCreatePhoto(i)}
-                          className="absolute top-1 right-1 w-5 h-5 bg-slate-900/70 text-white rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
-                        >
-                          <X size={12} />
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              <div className="flex gap-3 pt-2">
-                <button
-                  type="button"
-                  onClick={() => setCreateModal((prev) => ({ ...prev, isOpen: false }))}
-                  disabled={createModal.isLoading}
-                  className="flex-1 px-6 py-4 rounded-2xl bg-slate-50 text-slate-600 font-bold hover:bg-slate-100 transition-all active:scale-95 text-[10px] uppercase tracking-widest disabled:opacity-50"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={createModal.isLoading}
-                  className="flex-[1.5] px-6 py-4 rounded-2xl text-white font-bold transition-all shadow-lg active:scale-95 text-[10px] uppercase tracking-widest flex items-center justify-center gap-2 disabled:opacity-50 bg-primary hover:bg-primary-dark shadow-primary/20"
-                >
-                  {createModal.isLoading ? (
-                    <><Loader2 size={16} className="animate-spin" /> Creating...</>
-                  ) : 'Create Product'}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
 
       {/* Edit Modal */}
       {editModal.isOpen && editModal.product && (

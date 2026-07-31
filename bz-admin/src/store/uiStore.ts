@@ -21,6 +21,11 @@ interface UIState {
   openAddSellerModal: (onSuccess?: () => void) => void;
   closeAddSellerModal: () => void;
 
+  isAddProductModalOpen: boolean;
+  onProductAdded: (() => void) | null;
+  openAddProductModal: (onSuccess?: () => void) => void;
+  closeAddProductModal: () => void;
+
   isTelegramModalOpen: boolean;
   openTelegramModal: () => void;
   closeTelegramModal: () => void;
@@ -58,6 +63,11 @@ export const useUIStore = create<UIState>((set) => ({
   onSellerAdded: null,
   openAddSellerModal: (onSuccess) => set({ isAddSellerModalOpen: true, onSellerAdded: onSuccess || null }),
   closeAddSellerModal: () => set({ isAddSellerModalOpen: false, onSellerAdded: null }),
+
+  isAddProductModalOpen: false,
+  onProductAdded: null,
+  openAddProductModal: (onSuccess) => set({ isAddProductModalOpen: true, onProductAdded: onSuccess || null }),
+  closeAddProductModal: () => set({ isAddProductModalOpen: false, onProductAdded: null }),
 
   isTelegramModalOpen: false,
   openTelegramModal: () => set({ isTelegramModalOpen: true }),
