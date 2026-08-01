@@ -21,10 +21,18 @@ from app.schemas.search import SearchResponse, SearchResultItem
 log = structlog.get_logger(__name__)
 settings = get_settings()
 
-# Fixed score given to a keyword-only match (no vector hit) when cross-searching
-# from an in-house product — kept below the 0.75 vector score_threshold so
-# keyword hits never outrank a real visual match, only fill gaps beside them.
-KEYWORD_MATCH_WEIGHT = 0.5
+# /search/from-inhouse-product two-tier acceptance rule:
+#   score > STRONG_MATCH_THRESHOLD                                  → always included
+#   BORDERLINE_MATCH_THRESHOLD <= score <= STRONG_MATCH_THRESHOLD    → included only if
+#                                                                       that specific
+#                                                                       product's name/
+#                                                                       caption also
+#                                                                       matches one of the
+#                                                                       in-house product's
+#                                                                       keywords
+#   score < BORDERLINE_MATCH_THRESHOLD                               → never included
+STRONG_MATCH_THRESHOLD = 0.90
+BORDERLINE_MATCH_THRESHOLD = 0.85
 
 
 async def search_by_image(vector: list[float], page: int, size: int, db: AsyncSession) -> SearchResponse:
@@ -258,6 +266,12 @@ async def search_from_inhouse_product(
     vectors instead would risk a centroid that matches none of the individual
     photos well when they differ by angle/color; summing scores would unfairly
     reward products that partially match many photos over one true best match.
+
+    Acceptance is a two-tier rule: score > 0.90 is always included; a score in
+    [0.85, 0.90] needs corroboration — that specific candidate's name/caption
+    must also match one of the in-house product's keywords. Anything below
+    0.85 is dropped regardless of keywords (a text match alone doesn't make a
+    product "look like" the photo).
     """
     t0 = time.perf_counter()
     client = get_qdrant_client()
@@ -282,7 +296,7 @@ async def search_from_inhouse_product(
                         query=vector,
                         filter=active_filter,
                         limit=fetch_k,
-                        score_threshold=settings.search_similarity_threshold,
+                        score_threshold=BORDERLINE_MATCH_THRESHOLD,
                         with_payload=True,
                     )
                     for vector in vectors
@@ -295,25 +309,25 @@ async def search_from_inhouse_product(
                         continue
                     scores[pid] = max(scores.get(pid, 0.0), r.score)
 
-    # Keyword supplement — always runs alongside the vector search, fills in
-    # gaps only (never stacks on top of an existing vector score).
-    keyword_scores: dict[str, float] = {}
-    if inhouse_product.keywords:
+    strong = {pid: s for pid, s in scores.items() if s > STRONG_MATCH_THRESHOLD}
+    borderline = {pid: s for pid, s in scores.items() if BORDERLINE_MATCH_THRESHOLD <= s <= STRONG_MATCH_THRESHOLD}
+
+    merged = dict(strong)
+    if borderline and inhouse_product.keywords:
         conditions = []
         for kw in inhouse_product.keywords:
             pattern = f"%{kw}%"
             conditions.append(Product.name.ilike(pattern))
             conditions.append(Product.raw_caption.ilike(pattern))
         kw_result = await db.execute(
-            select(Product.id).where(Product.status == "active", or_(*conditions)).limit(fetch_k)
+            select(Product.id).where(
+                Product.id.in_([uuid.UUID(pid) for pid in borderline]),
+                Product.status == "active",
+                or_(*conditions),
+            )
         )
         for (pid,) in kw_result.all():
-            keyword_scores[str(pid)] = KEYWORD_MATCH_WEIGHT
-
-    merged = dict(scores)
-    for pid, kw_score in keyword_scores.items():
-        if pid not in merged:
-            merged[pid] = kw_score
+            merged[str(pid)] = borderline[str(pid)]
 
     if not merged:
         return SearchResponse(
