@@ -107,7 +107,7 @@ jobs:
       #     S3_ENDPOINT_URL: https://fake.example.com
       #     S3_REGION: auto
       #     DEDUP_SIMILARITY_THRESHOLD: "0.96"
-      #     STALENESS_DAYS: "30"
+      #     RETENTION_DAYS: "7"
 
       # - name: Upload coverage report
       #   uses: codecov/codecov-action@v4

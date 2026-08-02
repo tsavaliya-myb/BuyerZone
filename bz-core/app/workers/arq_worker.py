@@ -9,8 +9,7 @@ from arq import cron
 from app.config import get_settings
 from app.core.logging_config import configure_logging
 from app.workers.tasks.process_message import process_message
-from app.workers.tasks.staleness_check import staleness_check
-from app.workers.tasks.weekly_purge import weekly_purge
+from app.workers.tasks.retention_purge import retention_purge
 
 configure_logging()
 
@@ -35,12 +34,10 @@ async def startup(ctx: dict) -> None:
 class WorkerSettings:
     functions = [process_message]
     cron_jobs = [
-        # Run staleness check every day at 02:00 UTC
-        cron(staleness_check, hour={2}, minute={0}, name="staleness_check"),
-        # Weekly purge: Sunday 18:29 UTC = Sunday 23:59 IST
-        # Wipes ingestion_logs, products, wholesalers from Postgres,
-        # all points from Qdrant, and all buyerzone:* keys from Redis.
-        cron(weekly_purge, weekday={6}, hour={18}, minute={29}, name="weekly_purge"),
+        # Daily retention purge, 18:29 UTC = 23:59 IST.
+        # Deletes products (+ dependent ingestion_logs, orphaned wholesalers,
+        # Qdrant points, S3 images) older than settings.retention_days.
+        cron(retention_purge, hour={18}, minute={29}, name="retention_purge"),
     ]
     on_startup = startup
     redis_settings = settings.arq_redis_settings

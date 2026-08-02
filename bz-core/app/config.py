@@ -58,7 +58,7 @@ class Settings(BaseSettings):
     # /search/image and /search/combined. 0.75 = "clearly same product,
     # possibly different photo"; raise toward 0.90 for near-identical only.
     search_similarity_threshold: float = 0.75
-    staleness_days: int = 30
+    retention_days: int = 7
     catch_up_enabled: bool = True
     ingestion_internal_port: int = 8001
     ingestion_internal_url: str = "http://localhost:8001"

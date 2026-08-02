@@ -99,7 +99,7 @@ BuyerZone/                           # git root
 │   │       ├── arq_worker.py        # ARQ worker entrypoint + job definitions
 │   │       └── tasks/
 │   │           ├── process_message.py   # Main processing pipeline task
-│   │           └── staleness_check.py   # Periodic staleness cron task
+│   │           └── retention_purge.py   # Daily cron — deletes data older than RETENTION_DAYS
 │   ├── alembic/versions/            # Database migrations
 │   ├── sessions/                    # Pyrogram session files (gitignored)
 │   ├── tests/
@@ -145,7 +145,7 @@ R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET_NAME
 JWT_SECRET_KEY, JWT_ALGORITHM
 ENVIRONMENT, LOG_LEVEL
 DEDUP_SIMILARITY_THRESHOLD            # default 0.96
-STALENESS_DAYS                        # default 30
+RETENTION_DAYS                        # default 7 — daily purge deletes products/logs older than this
 ```
 
 ## API Structure
