@@ -22,17 +22,19 @@ settings = get_settings()
 # NOTE: Use [^\S\n] (whitespace-except-newline) so patterns don't match across lines
 # (prevents phone numbers on the *next* line from being grabbed as prices).
 _SP = r"[^\S\n]"                       # horizontal whitespace only
-_PRICE_PREFIX = rf"(?:(?:price|rate){_SP}*[:\-]?{_SP}*)?"
+# Separator: ASCII colon/hyphen + Unicode en-dash (–, U+2013) and em-dash (—, U+2014)
+_SEP = r"[:\-\u2013\u2014]"
+_PRICE_PREFIX = rf"(?:(?:price|rate){_SP}*{_SEP}?{_SP}*)?"
 _PRICE_RE = re.compile(
-    rf"{_PRICE_PREFIX}(?:₹|Rs\.?{_SP}*)(\d[\d,]*(?:\.\d{{1,2}})?)"
-    rf"|{_PRICE_PREFIX}(\d[\d,]*){_SP}*/-"
-    rf"|(?:price|rate){_SP}*[:\-]?{_SP}*(\d[\d,]*(?:\.\d{{1,2}})?)" ,
+    rf"{_PRICE_PREFIX}(?:₹|Rs\.?{_SP}*)(\d[\d,]*(?:\.\d{{1,2}})?)"           # group 1: ₹/Rs prefix
+    rf"|(?<!\d)(?<!\.)(\d[\d,]*(?:\.\d{{1,2}})?){_SP}*/-"                     # group 2: bare num/- (no mid-decimal match)
+    rf"|(?:price|rate){_SP}*{_SEP}?{_SP}*(\d[\d,]*(?:\.\d{{1,2}})?)" ,       # group 3: price/rate keyword
     re.IGNORECASE,
 )
 _CLEAN_RE = re.compile(
     rf"{_PRICE_PREFIX}(?:₹|Rs\.?{_SP}*)\d[\d,]*(?:\.\d{{1,2}})?"
-    rf"|{_PRICE_PREFIX}\d[\d,]*{_SP}*/-"
-    rf"|(?:price|rate){_SP}*[:\-]?{_SP}*\d[\d,]*(?:\.\d{{1,2}})?",
+    rf"|(?<!\d)(?<!\.)\d[\d,]*(?:\.\d{{1,2}})?{_SP}*/-"
+    rf"|(?:price|rate){_SP}*{_SEP}?{_SP}*\d[\d,]*(?:\.\d{{1,2}})?",
     re.IGNORECASE,
 )
 

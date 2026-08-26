@@ -57,7 +57,7 @@ class Settings(BaseSettings):
     # Minimum cosine similarity for a Qdrant result to be returned from
     # /search/image and /search/combined. 0.75 = "clearly same product,
     # possibly different photo"; raise toward 0.90 for near-identical only.
-    search_similarity_threshold: float = 0.75
+    search_similarity_threshold: float = 0.70
     retention_days: int = 7
     catch_up_enabled: bool = True
     ingestion_internal_port: int = 8001
