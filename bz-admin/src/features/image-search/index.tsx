@@ -35,7 +35,8 @@ export default function ImageSearch() {
     page: 1,
     queryTime: null as number | null,
     hasSearched: false,
-    error: null as string | null
+    error: null as string | null,
+    searchParams: null as { type: 'text', query: string } | { type: 'inhouse', id: string } | null
   });
 
   const [suggestions, setSuggestions] = useState<InHouseProductSuggestion[]>([]);
@@ -88,6 +89,7 @@ export default function ImageSearch() {
         queryTime: response.query_time_ms,
         hasSearched: true,
         error: null,
+        searchParams: { type: 'inhouse', id: suggestion.id },
       });
     } catch (err: any) {
       console.error('Cross-search error:', err);
@@ -222,7 +224,8 @@ export default function ImageSearch() {
         page: pageToFetch,
         queryTime: response.query_time_ms,
         hasSearched: true,
-        error: null
+        error: null,
+        searchParams: { type: 'text', query: textQuery.trim() }
       });
     } catch (err: any) {
       console.error('Text search error:', err);
@@ -231,6 +234,44 @@ export default function ImageSearch() {
       setTextSearch(prev => ({
         ...prev,
         error: msg || 'Failed to search by text. Please try again.',
+        hasSearched: true
+      }));
+    } finally {
+      setIsSearching(false);
+    }
+  };
+
+  const handleTextSearchPage = async (pageToFetch: number) => {
+    const params = textSearch.searchParams;
+    if (!params) return;
+
+    setIsSearching(true);
+    setTextSearch(prev => ({ ...prev, error: null, hasSearched: false }));
+
+    try {
+      let response;
+      if (params.type === 'inhouse') {
+        response = await imageSearchService.searchFromInhouseProduct(params.id, pageToFetch, 10);
+      } else {
+        response = await imageSearchService.searchByText(params.query, pageToFetch, 10);
+      }
+      
+      setTextSearch(prev => ({
+        ...prev,
+        results: response.results,
+        total: response.total,
+        page: pageToFetch,
+        queryTime: response.query_time_ms,
+        hasSearched: true,
+        error: null
+      }));
+    } catch (err: any) {
+      console.error('Pagination search error:', err);
+      const data = err.response?.data;
+      const msg = data?.detail || data?.message || data?.error || (typeof data === 'string' ? data : null);
+      setTextSearch(prev => ({
+        ...prev,
+        error: msg || 'Failed to fetch page. Please try again.',
         hasSearched: true
       }));
     } finally {
@@ -670,7 +711,7 @@ export default function ImageSearch() {
             </p>
             <div className="flex items-center gap-2">
               <button
-                onClick={() => searchMode === 'visual' ? handleVisualSearch(page - 1) : handleTextSearch(page - 1)}
+                onClick={() => searchMode === 'visual' ? handleVisualSearch(page - 1) : handleTextSearchPage(page - 1)}
                 disabled={page <= 1 || isSearching}
                 className="w-8 h-8 flex items-center justify-center rounded-lg border border-slate-100 text-slate-400 hover:bg-slate-50 transition-colors disabled:opacity-40"
               >
@@ -680,7 +721,7 @@ export default function ImageSearch() {
                 {page}
               </button>
               <button
-                onClick={() => searchMode === 'visual' ? handleVisualSearch(page + 1) : handleTextSearch(page + 1)}
+                onClick={() => searchMode === 'visual' ? handleVisualSearch(page + 1) : handleTextSearchPage(page + 1)}
                 disabled={page * 10 >= total || isSearching}
                 className="w-8 h-8 flex items-center justify-center rounded-lg border border-slate-100 text-slate-400 hover:bg-slate-50 transition-colors disabled:opacity-40"
               >
