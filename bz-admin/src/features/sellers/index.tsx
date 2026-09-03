@@ -12,12 +12,7 @@ export default function Sellers() {
   const [totalSellersCount, setTotalSellersCount] = useState(0);
   const [page, setPage] = useState(1);
   const [searchQuery, setSearchQuery] = useState('');
-  const [debouncedQuery, setDebouncedQuery] = useState('');
-
-  useEffect(() => {
-    const timer = setTimeout(() => setDebouncedQuery(searchQuery), 300);
-    return () => clearTimeout(timer);
-  }, [searchQuery]);
+  const [activeQuery, setActiveQuery] = useState('');
   const [confirmModal, setConfirmModal] = useState<{
     isOpen: boolean;
     seller: Seller | null;
@@ -79,7 +74,7 @@ export default function Sellers() {
   const fetchSellers = async () => {
     try {
       setLoading(true);
-      const data = await sellerSearchService.searchByText(debouncedQuery, page, 20);
+      const data = await sellerSearchService.searchByText(activeQuery, page, 20);
       setSellers(data.results.filter(seller => seller.is_active));
       setTotalSellersCount(data.total);
     } catch (error) {
@@ -91,7 +86,7 @@ export default function Sellers() {
 
   useEffect(() => {
     fetchSellers();
-  }, [debouncedQuery, page]);
+  }, [activeQuery, page]);
 
   const handleToggleStatus = (seller: Seller) => {
     setConfirmModal({
@@ -167,18 +162,32 @@ export default function Sellers() {
 
       <div className="card bg-white overflow-hidden shadow-sm border border-slate-50">
         <div className="p-6 border-b border-slate-50 flex flex-col md:flex-row gap-4">
-          <div className="relative flex-1">
-            <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
-            <input
-              type="text"
-              placeholder="Search by name, ID, or phone..."
-              value={searchQuery}
-              onChange={(e) => {
-                setSearchQuery(e.target.value);
+          <div className="relative flex-1 flex gap-2">
+            <div className="relative flex-1">
+              <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+              <input
+                type="text"
+                placeholder="Search by name, ID, or phone..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    setActiveQuery(searchQuery);
+                    setPage(1);
+                  }
+                }}
+                className="w-full pl-12 pr-4 py-3 bg-slate-50 border-none rounded-xl text-sm font-medium focus:ring-2 focus:ring-primary/20 transition-all outline-none h-full"
+              />
+            </div>
+            <button
+              onClick={() => {
+                setActiveQuery(searchQuery);
                 setPage(1);
               }}
-              className="w-full pl-12 pr-4 py-3 bg-slate-50 border-none rounded-xl text-sm font-medium focus:ring-2 focus:ring-primary/20 transition-all outline-none"
-            />
+              className="px-6 py-3 bg-slate-900 text-white rounded-xl text-xs font-bold hover:bg-slate-800 transition-colors shadow-sm whitespace-nowrap"
+            >
+              Search
+            </button>
           </div>
           <div className="flex items-center gap-3">
             <select className="bg-slate-50 border-none rounded-xl px-4 py-3 text-sm font-bold text-slate-600 outline-none cursor-pointer">

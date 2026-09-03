@@ -17,6 +17,8 @@ export default function ImageSearch() {
 
   const [searchMode, setSearchMode] = useState<SearchMode>('visual');
   const [pageSize, setPageSize] = useState(30);
+  const [sortBy, setSortBy] = useState<string>('');
+  const [sortOrder, setSortOrder] = useState<string>('');
   const [textQuery, setTextQuery] = useState('');
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [previewImage, setPreviewImage] = useState<string | null>(null);
@@ -82,7 +84,7 @@ export default function ImageSearch() {
     setIsSearching(true);
     setTextSearch(prev => ({ ...prev, error: null, hasSearched: false }));
     try {
-      const response = await imageSearchService.searchFromInhouseProduct(suggestion.id, 1, pageSize);
+      const response = await imageSearchService.searchFromInhouseProduct(suggestion.id, 1, pageSize, sortBy || undefined, sortOrder || undefined);
       setTextSearch({
         results: response.results,
         total: response.total,
@@ -188,7 +190,7 @@ export default function ImageSearch() {
     setVisualSearch(prev => ({ ...prev, error: null, hasSearched: false }));
 
     try {
-      const response = await imageSearchService.searchByImage(selectedFile, pageToFetch, pageSize);
+      const response = await imageSearchService.searchByImage(selectedFile, pageToFetch, pageSize, sortBy || undefined, sortOrder || undefined);
       setVisualSearch({
         results: response.results,
         total: response.total,
@@ -218,7 +220,7 @@ export default function ImageSearch() {
     setTextSearch(prev => ({ ...prev, error: null, hasSearched: false }));
 
     try {
-      const response = await imageSearchService.searchByText(textQuery.trim(), pageToFetch, pageSize);
+      const response = await imageSearchService.searchByText(textQuery.trim(), pageToFetch, pageSize, sortBy || undefined, sortOrder || undefined);
       setTextSearch({
         results: response.results,
         total: response.total,
@@ -252,9 +254,9 @@ export default function ImageSearch() {
     try {
       let response;
       if (params.type === 'inhouse') {
-        response = await imageSearchService.searchFromInhouseProduct(params.id, pageToFetch, pageSize);
+        response = await imageSearchService.searchFromInhouseProduct(params.id, pageToFetch, pageSize, sortBy || undefined, sortOrder || undefined);
       } else {
-        response = await imageSearchService.searchByText(params.query, pageToFetch, pageSize);
+        response = await imageSearchService.searchByText(params.query, pageToFetch, pageSize, sortBy || undefined, sortOrder || undefined);
       }
       
       setTextSearch(prev => ({
@@ -285,6 +287,15 @@ export default function ImageSearch() {
     if (score >= 0.7) return 'text-amber-600 bg-amber-50 border-amber-100';
     return 'text-slate-600 bg-slate-50 border-slate-100';
   };
+
+  useEffect(() => {
+    if (searchMode === 'visual' && visualSearch.hasSearched) {
+      handleVisualSearch(1);
+    } else if (searchMode === 'text' && textSearch.hasSearched) {
+      handleTextSearchPage(1);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sortBy, sortOrder]);
 
   const handleExport = () => {
     if (!results || results.length === 0) return;
@@ -578,9 +589,30 @@ export default function ImageSearch() {
           </div>
           {hasSearched && !error && results.length > 0 && (
             <div className="flex items-center gap-3">
-              <button className="flex items-center gap-2 px-4 py-2 bg-slate-100 text-slate-600 rounded-lg text-xs font-bold hover:bg-slate-200 transition-colors">
-                <Filter size={14} /> Filter
-              </button>
+              <div className="flex items-center gap-2 bg-slate-100 px-3 py-1.5 rounded-lg border border-slate-200 shadow-inner">
+                <Filter size={14} className="text-slate-500" />
+                <select
+                  value={`${sortBy}-${sortOrder}`}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    if (val === '-') {
+                      setSortBy('');
+                      setSortOrder('');
+                    } else {
+                      const [sb, so] = val.split('-');
+                      setSortBy(sb);
+                      setSortOrder(so);
+                    }
+                  }}
+                  className="bg-transparent text-xs font-bold text-slate-600 focus:outline-none cursor-pointer outline-none"
+                >
+                  <option value="-">Default (Relevance)</option>
+                  <option value="price-asc">Price: Low to High</option>
+                  <option value="price-desc">Price: High to Low</option>
+                  <option value="receivedAt-desc">Date: Latest to Old</option>
+                  <option value="receivedAt-asc">Date: Old to Latest</option>
+                </select>
+              </div>
               <button
                 onClick={handleExport}
                 className="flex items-center gap-2 px-4 py-2 bg-slate-800 text-white rounded-lg text-xs font-bold hover:bg-slate-900 transition-colors"

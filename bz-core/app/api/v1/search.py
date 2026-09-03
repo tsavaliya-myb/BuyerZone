@@ -29,6 +29,8 @@ async def search_by_image(
     image_base64: str | None = Form(None),
     page: int = Query(default=1, ge=1),
     size: int = Query(default=10, ge=1, le=100),
+    sort_by: str | None = Query(None, alias="sortBy"),
+    sort_order: str = Query("desc", alias="sortOrder"),
     db: AsyncSession = Depends(get_db),
     _=Depends(require_admin),
 ):
@@ -43,7 +45,7 @@ async def search_by_image(
 
     loop = asyncio.get_running_loop()
     vector = await loop.run_in_executor(None, embed_image, image_bytes)
-    return await search_svc.search_by_image(vector, page, size, db)
+    return await search_svc.search_by_image(vector, page, size, db, sort_by, sort_order)
 
 
 @router.get("/text", response_model=SearchResponse)
@@ -51,10 +53,12 @@ async def search_by_text(
     q: str = Query(..., min_length=1),
     page: int = Query(default=1, ge=1),
     size: int = Query(default=10, ge=1, le=100),
+    sort_by: str | None = Query(None, alias="sortBy"),
+    sort_order: str = Query("desc", alias="sortOrder"),
     db: AsyncSession = Depends(get_db),
     _=Depends(require_admin),
 ):
-    return await search_svc.search_by_text(q, page, size, db)
+    return await search_svc.search_by_text(q, page, size, db, sort_by, sort_order)
 
 
 @router.get("/from-inhouse-product", response_model=SearchResponse)
@@ -62,6 +66,8 @@ async def search_from_inhouse_product(
     inhouse_product_id: uuid.UUID = Query(...),
     page: int = Query(default=1, ge=1),
     size: int = Query(default=10, ge=1, le=100),
+    sort_by: str | None = Query(None, alias="sortBy"),
+    sort_order: str = Query("desc", alias="sortOrder"),
     db: AsyncSession = Depends(get_db),
     _=Depends(require_admin),
 ):
@@ -74,7 +80,7 @@ async def search_from_inhouse_product(
     if not inhouse_product:
         raise HTTPException(status_code=404, detail="In-house product not found")
 
-    return await search_svc.search_from_inhouse_product(inhouse_product, page, size, db)
+    return await search_svc.search_from_inhouse_product(inhouse_product, page, size, db, sort_by, sort_order)
 
 
 @router.post("/combined", response_model=SearchResponse)
@@ -85,6 +91,8 @@ async def search_combined(
     image_weight: float = Form(default=0.7),
     page: int = Query(default=1, ge=1),
     size: int = Query(default=10, ge=1, le=100),
+    sort_by: str | None = Query(None, alias="sortBy"),
+    sort_order: str = Query("desc", alias="sortOrder"),
     db: AsyncSession = Depends(get_db),
     _=Depends(require_admin),
 ):
@@ -107,5 +115,5 @@ async def search_combined(
         raise HTTPException(status_code=400, detail="Provide at least image or text")
 
     return await search_svc.search_combined(
-        image_vector, text_vector, image_weight, page, size, db, text_query=text
+        image_vector, text_vector, image_weight, page, size, db, sort_by, sort_order, text_query=text
     )

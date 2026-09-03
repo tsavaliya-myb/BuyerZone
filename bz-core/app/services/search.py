@@ -21,48 +21,40 @@ from app.schemas.search import SearchResponse, SearchResultItem
 log = structlog.get_logger(__name__)
 settings = get_settings()
 
-# /search/from-inhouse-product two-tier acceptance rule:
-#   score > STRONG_MATCH_THRESHOLD                                  → always included
-#   BORDERLINE_MATCH_THRESHOLD <= score <= STRONG_MATCH_THRESHOLD    → included only if
-#                                                                       that specific
-#                                                                       product's name/
-#                                                                       caption also
-#                                                                       matches one of the
-#                                                                       in-house product's
-#                                                                       keywords
-#   score < BORDERLINE_MATCH_THRESHOLD                               → never included
 STRONG_MATCH_THRESHOLD = 0.90
 BORDERLINE_MATCH_THRESHOLD = 0.85
 
 
-async def search_by_image(vector: list[float], page: int, size: int, db: AsyncSession) -> SearchResponse:
+async def search_by_image(vector: list[float], page: int, size: int, db: AsyncSession, sort_by: str | None = None, sort_order: str = "desc") -> SearchResponse:
     t0 = time.perf_counter()
     client = get_qdrant_client()
 
-    offset = (page - 1) * size
+    offset = (page - 1) * size if not sort_by else 0
+    limit = size if not sort_by else 1000
 
     response = await client.query_points(
         collection_name=settings.qdrant_collection,
         query=vector,
         query_filter=Filter(must=[FieldCondition(key="status", match=MatchValue(value="active"))]),
-        limit=size,
+        limit=limit,
         offset=offset,
         score_threshold=settings.search_similarity_threshold,
         with_payload=True,
     )
 
-    items = await _enrich(response.points, db)
+    items = await _enrich(response.points, db, sort_by=sort_by, sort_order=sort_order, page=page, size=size)
+    total = len(response.points) if sort_by else len(items)
     elapsed_ms = (time.perf_counter() - t0) * 1000
     return SearchResponse(
         results=items, 
-        total=len(items), 
+        total=total, 
         query_time_ms=round(elapsed_ms, 2),
         page=page,
         size=size
     )
 
 
-async def search_by_text(query: str, page: int, size: int, db: AsyncSession) -> SearchResponse:
+async def search_by_text(query: str, page: int, size: int, db: AsyncSession, sort_by: str | None = None, sort_order: str = "desc") -> SearchResponse:
     t0 = time.perf_counter()
     pattern = f"%{query}%"
 
@@ -78,16 +70,20 @@ async def search_by_text(query: str, page: int, size: int, db: AsyncSession) -> 
 
     offset = (page - 1) * size
 
-    result = await db.execute(
+    query_obj = (
         select(Product)
         .options(selectinload(Product.wholesaler))
         .where(
             Product.status == "active",
             or_(Product.name.ilike(pattern), Product.raw_caption.ilike(pattern)),
         )
-        .offset(offset)
-        .limit(size)
     )
+    if sort_by == "price":
+        query_obj = query_obj.order_by(Product.price.asc() if sort_order == "asc" else Product.price.desc())
+    elif sort_by == "receivedAt":
+        query_obj = query_obj.order_by(Product.received_at.asc() if sort_order == "asc" else Product.received_at.desc())
+        
+    result = await db.execute(query_obj.offset(offset).limit(size))
     products = list(result.scalars().all())
     chats = await _load_chats(products, db)
     items = [_product_to_result(p, 1.0, chats) for p in products]
@@ -108,20 +104,18 @@ async def search_combined(
     page: int,
     size: int,
     db: AsyncSession,
+    sort_by: str | None = None,
+    sort_order: str = "desc",
     text_query: str | None = None,
 ) -> SearchResponse:
-    """Weighted fusion of image and text CLIP vectors, supplemented by keyword matching."""
     t0 = time.perf_counter()
     client = get_qdrant_client()
     text_weight = 1.0 - image_weight
 
-    # Always fetch a large number from Qdrant to merge accurately, since pagination happens after merging
-    fetch_k = 100 
+    fetch_k = 1000 if sort_by else 100 
     active_filter = Filter(must=[FieldCondition(key="status", match=MatchValue(value="active"))])
 
-    # qdrant_id → fused score
     scores: dict[str, float] = {}
-    # product_id (str UUID) → fused score for keyword-only hits
     keyword_scores: dict[str, float] = {}
 
     if image_vector:
@@ -148,7 +142,6 @@ async def search_combined(
         for r in text_response.points:
             scores[str(r.id)] = scores.get(str(r.id), 0) + r.score * text_weight
 
-    # Keyword supplement: products matching name/raw_caption that may not rank in Qdrant
     if text_query:
         pattern = f"%{text_query}%"
         kw_result = await db.execute(
@@ -162,7 +155,6 @@ async def search_combined(
         for (pid,) in kw_result.all():
             keyword_scores[str(pid)] = text_weight
 
-    # Resolve qdrant scores → product_ids
     sorted_qdrant_ids = sorted(scores, key=lambda k: scores[k], reverse=True)[:fetch_k]
 
     product_ids_from_qdrant: list[str] = []
@@ -177,7 +169,6 @@ async def search_combined(
             if r.payload and r.payload.get("product_id")
         ]
 
-    # Merge: give qdrant hits their vector score; add keyword-only hits with text_weight
     merged: dict[str, float] = {}
     for qdrant_id, pid in zip(sorted_qdrant_ids, product_ids_from_qdrant, strict=False):
         if pid:
@@ -190,22 +181,39 @@ async def search_combined(
         return SearchResponse(results=[], total=0, query_time_ms=0, page=page, size=size)
 
     offset = (page - 1) * size
-    sorted_pids = sorted(merged, key=lambda k: merged[k], reverse=True)[offset:offset + size]
+    if sort_by:
+        sorted_pids = list(merged.keys())
+    else:
+        sorted_pids = sorted(merged, key=lambda k: merged[k], reverse=True)[offset:offset + size]
+        
     total_matches = len(merged)
 
-    result = await db.execute(
-        select(Product)
-        .options(selectinload(Product.wholesaler))
-        .where(Product.id.in_([uuid.UUID(pid) for pid in sorted_pids]))
-    )
-    products_map = {str(p.id): p for p in result.scalars().all()}
+    query_obj = select(Product).options(selectinload(Product.wholesaler)).where(Product.id.in_([uuid.UUID(pid) for pid in sorted_pids]))
+    if sort_by == "price":
+        query_obj = query_obj.order_by(Product.price.asc() if sort_order == "asc" else Product.price.desc())
+    elif sort_by == "receivedAt":
+        query_obj = query_obj.order_by(Product.received_at.asc() if sort_order == "asc" else Product.received_at.desc())
 
-    chats = await _load_chats(list(products_map.values()), db)
-    items = [
-        _product_to_result(products_map[pid], merged[pid], chats)
-        for pid in sorted_pids
-        if pid in products_map
-    ]
+    if sort_by:
+        query_obj = query_obj.offset(offset).limit(size)
+
+    result = await db.execute(query_obj)
+    products_list = list(result.scalars().all())
+    products_map = {str(p.id): p for p in products_list}
+
+    chats = await _load_chats(products_list, db)
+    
+    if sort_by:
+        items = [
+            _product_to_result(p, merged.get(str(p.id), 0.0), chats)
+            for p in products_list
+        ]
+    else:
+        items = [
+            _product_to_result(products_map[pid], merged[pid], chats)
+            for pid in sorted_pids
+            if pid in products_map
+        ]
 
     elapsed_ms = (time.perf_counter() - t0) * 1000
     return SearchResponse(
@@ -217,7 +225,7 @@ async def search_combined(
     )
 
 
-async def _enrich(qdrant_results, db: AsyncSession) -> list[SearchResultItem]:
+async def _enrich(qdrant_results, db: AsyncSession, sort_by: str | None = None, sort_order: str = "desc", page: int | None = None, size: int | None = None) -> list[SearchResultItem]:
     if not qdrant_results:
         return []
 
@@ -232,19 +240,32 @@ async def _enrich(qdrant_results, db: AsyncSession) -> list[SearchResultItem]:
         if r.payload and r.payload.get("product_id")
     }
 
-    result = await db.execute(
-        select(Product).options(selectinload(Product.wholesaler)).where(Product.id.in_(product_ids))
-    )
-    products = {str(p.id): p for p in result.scalars().all()}
-    chats = await _load_chats(list(products.values()), db)
+    query = select(Product).options(selectinload(Product.wholesaler)).where(Product.id.in_(product_ids))
+    if sort_by == "price":
+        query = query.order_by(Product.price.asc() if sort_order == "asc" else Product.price.desc())
+    elif sort_by == "receivedAt":
+        query = query.order_by(Product.received_at.asc() if sort_order == "asc" else Product.received_at.desc())
+        
+    if sort_by and page is not None and size is not None:
+        query = query.offset((page - 1) * size).limit(size)
 
-    items = []
-    for r in qdrant_results:
-        pid = r.payload.get("product_id") if r.payload else None
-        if pid and pid in products:
-            items.append(_product_to_result(products[pid], scores_by_product.get(pid, 0.0), chats))
+    result = await db.execute(query)
+    products_list = list(result.scalars().all())
+    chats = await _load_chats(products_list, db)
 
-    return items
+    if sort_by:
+        items = []
+        for p in products_list:
+            items.append(_product_to_result(p, scores_by_product.get(str(p.id), 0.0), chats))
+        return items
+    else:
+        products = {str(p.id): p for p in products_list}
+        items = []
+        for r in qdrant_results:
+            pid = r.payload.get("product_id") if r.payload else None
+            if pid and pid in products:
+                items.append(_product_to_result(products[pid], scores_by_product.get(pid, 0.0), chats))
+        return items
 
 
 async def _load_chats(products: list[Product], db: AsyncSession) -> dict[str, MonitoredChat]:
@@ -256,26 +277,11 @@ async def _load_chats(products: list[Product], db: AsyncSession) -> dict[str, Mo
 
 
 async def search_from_inhouse_product(
-    inhouse_product: InHouseProduct, page: int, size: int, db: AsyncSession
+    inhouse_product: InHouseProduct, page: int, size: int, db: AsyncSession, sort_by: str | None = None, sort_order: str = "desc"
 ) -> SearchResponse:
-    """Cross-search: find ingested products visually/textually similar to an in-house product.
-
-    Queries once per photo vector, batched into a single Qdrant round trip via
-    query_batch_points, then max-pools the score per candidate ingested product
-    across all photo queries — the best-matching photo wins. Averaging the
-    vectors instead would risk a centroid that matches none of the individual
-    photos well when they differ by angle/color; summing scores would unfairly
-    reward products that partially match many photos over one true best match.
-
-    Acceptance is a two-tier rule: score > 0.90 is always included; a score in
-    [0.85, 0.90] needs corroboration — that specific candidate's name/caption
-    must also match one of the in-house product's keywords. Anything below
-    0.85 is dropped regardless of keywords (a text match alone doesn't make a
-    product "look like" the photo).
-    """
     t0 = time.perf_counter()
     client = get_qdrant_client()
-    fetch_k = 100
+    fetch_k = 1000 if sort_by else 100
     active_filter = Filter(must=[FieldCondition(key="status", match=MatchValue(value="active"))])
 
     scores: dict[str, float] = {}
@@ -339,21 +345,38 @@ async def search_from_inhouse_product(
         )
 
     offset = (page - 1) * size
-    sorted_pids = sorted(merged, key=lambda k: merged[k], reverse=True)[offset : offset + size]
+    if sort_by:
+        sorted_pids = list(merged.keys())
+    else:
+        sorted_pids = sorted(merged, key=lambda k: merged[k], reverse=True)[offset : offset + size]
+        
     total_matches = len(merged)
 
-    result = await db.execute(
-        select(Product)
-        .options(selectinload(Product.wholesaler))
-        .where(Product.id.in_([uuid.UUID(pid) for pid in sorted_pids]))
-    )
-    products_map = {str(p.id): p for p in result.scalars().all()}
-    chats = await _load_chats(list(products_map.values()), db)
-    items = [
-        _product_to_result(products_map[pid], merged[pid], chats)
-        for pid in sorted_pids
-        if pid in products_map
-    ]
+    query_obj = select(Product).options(selectinload(Product.wholesaler)).where(Product.id.in_([uuid.UUID(pid) for pid in sorted_pids]))
+    if sort_by == "price":
+        query_obj = query_obj.order_by(Product.price.asc() if sort_order == "asc" else Product.price.desc())
+    elif sort_by == "receivedAt":
+        query_obj = query_obj.order_by(Product.received_at.asc() if sort_order == "asc" else Product.received_at.desc())
+
+    if sort_by:
+        query_obj = query_obj.offset(offset).limit(size)
+
+    result = await db.execute(query_obj)
+    products_list = list(result.scalars().all())
+    products_map = {str(p.id): p for p in products_list}
+    chats = await _load_chats(products_list, db)
+    
+    if sort_by:
+        items = [
+            _product_to_result(p, merged.get(str(p.id), 0.0), chats)
+            for p in products_list
+        ]
+    else:
+        items = [
+            _product_to_result(products_map[pid], merged[pid], chats)
+            for pid in sorted_pids
+            if pid in products_map
+        ]
 
     elapsed_ms = (time.perf_counter() - t0) * 1000
     return SearchResponse(
