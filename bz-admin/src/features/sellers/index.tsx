@@ -2,12 +2,22 @@ import { useEffect, useState } from 'react';
 import { Users, Package, Search, Plus, ChevronLeft, ChevronRight, AlertTriangle, Trash2, Edit2, X } from 'lucide-react';
 import MainLayout from '@/components/layout/MainLayout';
 import { sellersService, type Seller } from '@/services/sellers';
+import { sellerSearchService } from '@/services/sellerSearch';
 import { useUIStore } from '@/store/uiStore';
 
 export default function Sellers() {
   const { openAddSellerModal } = useUIStore();
   const [sellers, setSellers] = useState<Seller[]>([]);
   const [loading, setLoading] = useState(true);
+  const [totalSellersCount, setTotalSellersCount] = useState(0);
+  const [page, setPage] = useState(1);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [debouncedQuery, setDebouncedQuery] = useState('');
+
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedQuery(searchQuery), 300);
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
   const [confirmModal, setConfirmModal] = useState<{
     isOpen: boolean;
     seller: Seller | null;
@@ -69,8 +79,9 @@ export default function Sellers() {
   const fetchSellers = async () => {
     try {
       setLoading(true);
-      const data = await sellersService.getSellers();
-      setSellers(data.filter(seller => seller.is_active));
+      const data = await sellerSearchService.searchByText(debouncedQuery, page, 20);
+      setSellers(data.results.filter(seller => seller.is_active));
+      setTotalSellersCount(data.total);
     } catch (error) {
       console.error("Failed to fetch sellers", error);
     } finally {
@@ -80,7 +91,7 @@ export default function Sellers() {
 
   useEffect(() => {
     fetchSellers();
-  }, []);
+  }, [debouncedQuery, page]);
 
   const handleToggleStatus = (seller: Seller) => {
     setConfirmModal({
@@ -110,7 +121,6 @@ export default function Sellers() {
     }
   };
 
-  const totalSellers = sellers.length;
   const totalProducts = sellers.reduce((acc, curr) => acc + (curr.product_count || 0), 0);
 
   const getColor = (index: number) => {
@@ -140,7 +150,7 @@ export default function Sellers() {
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
         {[
-          { icon: Users, label: 'TOTAL SELLERS', value: loading ? '...' : totalSellers.toLocaleString(), color: 'bg-blue-50 text-blue-600' },
+          { icon: Users, label: 'TOTAL SELLERS', value: loading ? '...' : totalSellersCount.toLocaleString(), color: 'bg-blue-50 text-blue-600' },
           { icon: Package, label: 'TOTAL PRODUCTS', value: loading ? '...' : totalProducts.toLocaleString(), color: 'bg-indigo-50 text-indigo-600' },
         ].map((stat, i) => (
           <div key={i} className="card bg-white p-6 shadow-sm border border-slate-50 flex items-center gap-4">
@@ -162,6 +172,11 @@ export default function Sellers() {
             <input
               type="text"
               placeholder="Search by name, ID, or phone..."
+              value={searchQuery}
+              onChange={(e) => {
+                setSearchQuery(e.target.value);
+                setPage(1);
+              }}
               className="w-full pl-12 pr-4 py-3 bg-slate-50 border-none rounded-xl text-sm font-medium focus:ring-2 focus:ring-primary/20 transition-all outline-none"
             />
           </div>
@@ -260,13 +275,19 @@ export default function Sellers() {
         </div>
 
         <div className="p-6 border-t border-slate-50 flex items-center justify-between">
-          <p className="text-[11px] font-bold text-slate-400">Showing {sellers.length} of {totalSellers} sellers</p>
+          <p className="text-[11px] font-bold text-slate-400">Showing {sellers.length} of {totalSellersCount} sellers</p>
           <div className="flex items-center gap-2">
-            <button className="w-8 h-8 flex items-center justify-center rounded-xl border border-slate-100 text-slate-400 hover:bg-slate-50 transition-colors">
+            <button 
+              onClick={() => setPage(p => Math.max(1, p - 1))}
+              disabled={page === 1}
+              className="w-8 h-8 flex items-center justify-center rounded-xl border border-slate-100 text-slate-400 hover:bg-slate-50 transition-colors disabled:opacity-50">
               <ChevronLeft size={16} />
             </button>
-            <button className="w-8 h-8 flex items-center justify-center rounded-xl bg-primary text-white text-xs font-bold">1</button>
-            <button className="w-8 h-8 flex items-center justify-center rounded-xl border border-slate-100 text-slate-400 hover:bg-slate-50 transition-colors">
+            <button className="w-8 h-8 flex items-center justify-center rounded-xl bg-primary text-white text-xs font-bold">{page}</button>
+            <button 
+              onClick={() => setPage(p => p + 1)}
+              disabled={sellers.length < 20}
+              className="w-8 h-8 flex items-center justify-center rounded-xl border border-slate-100 text-slate-400 hover:bg-slate-50 transition-colors disabled:opacity-50">
               <ChevronRight size={16} />
             </button>
           </div>

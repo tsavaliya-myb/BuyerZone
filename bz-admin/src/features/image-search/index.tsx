@@ -16,6 +16,7 @@ export default function ImageSearch() {
   const suggestDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [searchMode, setSearchMode] = useState<SearchMode>('visual');
+  const [pageSize, setPageSize] = useState(30);
   const [textQuery, setTextQuery] = useState('');
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [previewImage, setPreviewImage] = useState<string | null>(null);
@@ -81,7 +82,7 @@ export default function ImageSearch() {
     setIsSearching(true);
     setTextSearch(prev => ({ ...prev, error: null, hasSearched: false }));
     try {
-      const response = await imageSearchService.searchFromInhouseProduct(suggestion.id, 1, 10);
+      const response = await imageSearchService.searchFromInhouseProduct(suggestion.id, 1, pageSize);
       setTextSearch({
         results: response.results,
         total: response.total,
@@ -187,7 +188,7 @@ export default function ImageSearch() {
     setVisualSearch(prev => ({ ...prev, error: null, hasSearched: false }));
 
     try {
-      const response = await imageSearchService.searchByImage(selectedFile, pageToFetch, 10);
+      const response = await imageSearchService.searchByImage(selectedFile, pageToFetch, pageSize);
       setVisualSearch({
         results: response.results,
         total: response.total,
@@ -217,7 +218,7 @@ export default function ImageSearch() {
     setTextSearch(prev => ({ ...prev, error: null, hasSearched: false }));
 
     try {
-      const response = await imageSearchService.searchByText(textQuery.trim(), pageToFetch, 10);
+      const response = await imageSearchService.searchByText(textQuery.trim(), pageToFetch, pageSize);
       setTextSearch({
         results: response.results,
         total: response.total,
@@ -251,9 +252,9 @@ export default function ImageSearch() {
     try {
       let response;
       if (params.type === 'inhouse') {
-        response = await imageSearchService.searchFromInhouseProduct(params.id, pageToFetch, 10);
+        response = await imageSearchService.searchFromInhouseProduct(params.id, pageToFetch, pageSize);
       } else {
-        response = await imageSearchService.searchByText(params.query, pageToFetch, 10);
+        response = await imageSearchService.searchByText(params.query, pageToFetch, pageSize);
       }
       
       setTextSearch(prev => ({
@@ -288,7 +289,7 @@ export default function ImageSearch() {
   const handleExport = () => {
     if (!results || results.length === 0) return;
 
-    const headers = ['Product Image', 'Product Name', 'Seller / Channel', 'Price', 'Received At', 'Match Score'];
+    const headers = ['Product Image', 'Product Name', 'Seller / Channel', 'Platform', 'Price', 'Received At', 'Match Score'];
     const csvContent = [
       headers.join(','),
       ...results.map(result => {
@@ -297,6 +298,7 @@ export default function ImageSearch() {
         });
         const scoreLabel = `${Math.round(result.similarity_score * 100)}%`;
         const sellerName = result.chat_name || result.wholesaler_name || 'Unknown Seller';
+        const platform = result.platform || 'Unknown';
         const priceLabel = result.currency === 'INR'
           ? `${result.price?.toLocaleString() ?? '0'} ₹`
           : `${result.currency} ${result.price?.toLocaleString() ?? '0'}`;
@@ -305,6 +307,7 @@ export default function ImageSearch() {
           `"${result.image_url || ''}"`,
           `"${result.name?.replace(/"/g, '""') || ''}"`,
           `"${sellerName?.replace(/"/g, '""')}"`,
+          `"${platform}"`,
           `"${priceLabel}"`,
           `"${dateLabel}"`,
           `"${scoreLabel}"`
@@ -343,8 +346,22 @@ export default function ImageSearch() {
           </p>
         </div>
 
-        <div className="flex bg-slate-100 p-1 rounded-2xl border border-slate-200 shadow-inner w-fit self-start md:self-auto">
-          <button
+        <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4 self-start md:self-auto">
+          <div className="flex items-center gap-2 bg-slate-100 px-4 py-2.5 rounded-2xl border border-slate-200 shadow-inner h-full">
+            <span className="text-xs font-bold text-slate-500 whitespace-nowrap">Per Page:</span>
+            <select
+              value={pageSize}
+              onChange={(e) => setPageSize(Number(e.target.value))}
+              className="bg-transparent text-xs font-bold text-slate-800 focus:outline-none cursor-pointer"
+            >
+              <option value={30}>30</option>
+              <option value={50}>50</option>
+              <option value={100}>100</option>
+            </select>
+          </div>
+
+          <div className="flex bg-slate-100 p-1 rounded-2xl border border-slate-200 shadow-inner w-fit">
+            <button
             onClick={() => setSearchMode('visual')}
             className={`flex items-center gap-2 px-6 py-2.5 rounded-xl text-xs font-black transition-all ${searchMode === 'visual'
               ? 'bg-white text-slate-900 shadow-sm'
@@ -364,6 +381,7 @@ export default function ImageSearch() {
             <Type size={16} />
             Text Search
           </button>
+        </div>
         </div>
       </div>
       {/* Input Sections */}
@@ -580,6 +598,7 @@ export default function ImageSearch() {
                 <th className="px-6 py-4">Product Image</th>
                 <th className="px-6 py-4">Product Name</th>
                 <th className="px-6 py-4">Seller / Channel</th>
+                <th className="px-6 py-4 text-center">Platform</th>
                 <th className="px-6 py-4">Price</th>
                 {/* <th className="px-6 py-4">Phone</th> */}
                 <th className="px-6 py-4 text-center">Received At</th>
@@ -591,7 +610,7 @@ export default function ImageSearch() {
               {/* Loading State */}
               {isSearching && (
                 <tr>
-                  <td colSpan={7} className="px-6 py-16 text-center">
+                  <td colSpan={8} className="px-6 py-16 text-center">
                     <div className="flex flex-col items-center gap-3">
                       <Loader2 className="animate-spin text-primary" size={32} />
                       <p className="text-slate-400 font-medium text-sm">Searching wholesale database...</p>
@@ -603,7 +622,7 @@ export default function ImageSearch() {
               {/* Error State */}
               {!isSearching && error && (
                 <tr>
-                  <td colSpan={7} className="px-6 py-16 text-center">
+                  <td colSpan={8} className="px-6 py-16 text-center">
                     <div className="flex flex-col items-center gap-3">
                       <AlertCircle className="text-red-400" size={32} />
                       <p className="text-red-500 font-bold text-sm">{error}</p>
@@ -615,7 +634,7 @@ export default function ImageSearch() {
               {/* Empty / No Search State */}
               {!isSearching && !error && !hasSearched && (
                 <tr>
-                  <td colSpan={7} className="px-6 py-16 text-center">
+                  <td colSpan={8} className="px-6 py-16 text-center">
                     <div className="flex flex-col items-center gap-3">
                       <div className="w-16 h-16 bg-slate-50 rounded-full flex items-center justify-center text-slate-300">
                         {searchMode === 'visual' ? <UploadCloud size={32} /> : <Search size={32} />}
@@ -634,7 +653,7 @@ export default function ImageSearch() {
               {/* No Results Found */}
               {!isSearching && !error && hasSearched && results.length === 0 && (
                 <tr>
-                  <td colSpan={7} className="px-6 py-16 text-center">
+                  <td colSpan={8} className="px-6 py-16 text-center">
                     <div className="flex flex-col items-center gap-3">
                       <ImageOff className="text-slate-300" size={32} />
                       <p className="text-slate-400 font-medium text-sm">No matching products found for this search.</p>
@@ -681,6 +700,11 @@ export default function ImageSearch() {
                     </td>
 
                     <td className="px-6 py-4 font-medium text-slate-600 text-sm">{sellerName}</td>
+                    <td className="px-6 py-4 text-center">
+                      <span className="px-2.5 py-1 rounded-full text-[10px] font-bold border border-slate-200 bg-slate-50 text-slate-600 capitalize">
+                        {result.platform || 'unknown'}
+                      </span>
+                    </td>
                     <td className="px-6 py-4 text-sm font-bold text-primary">
                       {result.currency === 'INR' ? `${result.price?.toLocaleString() ?? '0'} ₹` : `${result.currency} ${result.price?.toLocaleString() ?? '0'}`}
                     </td>
@@ -722,7 +746,7 @@ export default function ImageSearch() {
               </button>
               <button
                 onClick={() => searchMode === 'visual' ? handleVisualSearch(page + 1) : handleTextSearchPage(page + 1)}
-                disabled={page * 10 >= total || isSearching}
+                disabled={page * pageSize >= total || isSearching}
                 className="w-8 h-8 flex items-center justify-center rounded-lg border border-slate-100 text-slate-400 hover:bg-slate-50 transition-colors disabled:opacity-40"
               >
                 <ChevronRight size={16} />

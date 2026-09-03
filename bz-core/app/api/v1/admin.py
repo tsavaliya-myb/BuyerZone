@@ -203,6 +203,63 @@ async def list_chats(db: AsyncSession = Depends(get_db), _=Depends(require_admin
     return items
 
 
+@router.get("/chats/search-sellers")
+async def search_sellers(
+    q: str = Query(""),
+    page: int = Query(1, ge=1),
+    size: int = Query(10, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+    _=Depends(require_admin),
+):
+    from sqlalchemy import or_
+
+    query = select(MonitoredChat)
+    if q:
+        query = query.where(
+            or_(
+                MonitoredChat.chat_name.ilike(f"%{q}%"),
+                MonitoredChat.chat_id.ilike(f"%{q}%"),
+                MonitoredChat.phone.ilike(f"%{q}%")
+            )
+        )
+
+    query = query.order_by(MonitoredChat.added_at.desc())
+
+    # Attach total count
+    total_result = await db.execute(select(func.count()).select_from(query.subquery()))
+    total = total_result.scalar_one()
+
+    # Paginate
+    query = query.offset((page - 1) * size).limit(size)
+    result = await db.execute(query)
+    chats = result.scalars().all()
+
+    # Attach product counts
+    if chats:
+        chat_ids = [c.chat_id for c in chats]
+        counts_result = await db.execute(
+            select(Product.chat_id, func.count(Product.id))
+            .where(Product.chat_id.in_(chat_ids))
+            .group_by(Product.chat_id)
+        )
+        counts = {row[0]: row[1] for row in counts_result.fetchall()}
+    else:
+        counts = {}
+
+    items = []
+    for chat in chats:
+        item = MonitoredChatResponse.model_validate(chat)
+        item.product_count = counts.get(chat.chat_id, 0)
+        items.append(item.model_dump())
+
+    return {
+        "results": items,
+        "total": total,
+        "page": page,
+        "size": size
+    }
+
+
 # ── Wholesalers ────────────────────────────────────────────────────────────────
 
 
