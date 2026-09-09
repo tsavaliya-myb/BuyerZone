@@ -15,9 +15,11 @@ export default function AddSellerModal() {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [existingChatIds, setExistingChatIds] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     if (!isAddSellerModalOpen) {
+      setExistingChatIds(new Set());
       setPlatform('telegram');
       setSearchQuery('');
       setResults([]);
@@ -25,6 +27,10 @@ export default function AddSellerModal() {
       setError(null);
       setSuccess(false);
       setIsSearching(false);
+    } else {
+      sellersService.getSellers().then(sellers => {
+        setExistingChatIds(new Set(sellers.filter(s => s.is_active).map(s => String(s.chat_id))));
+      }).catch(err => console.error("Failed to fetch existing sellers:", err));
     }
   }, [isAddSellerModalOpen]);
 
@@ -101,6 +107,9 @@ export default function AddSellerModal() {
         await sellersService.addWhatsappSellersBatch(waPayload);
       }
       setSuccess(true);
+
+      // Update existing chat IDs so UI reflects immediately
+      setExistingChatIds(prev => new Set([...prev, ...itemsToAdd.map(i => String(i.id))]));
 
       // TRIGGER REFRESH
       if (onSellerAdded) {
@@ -260,14 +269,18 @@ export default function AddSellerModal() {
                   const selectionValue = isTelegram ? name : id;
 
                   const isSelected = selectedSellers.some(v => v.id === selectionValue);
+                  const isAlreadyAdded = existingChatIds.has(String(id));
 
                   return (
                     <div
                       key={id || idx}
-                      onClick={() => toggleSelection(selectionValue, name || selectionValue)}
-                      className={`p-5 rounded-[20px] border-2 transition-all cursor-pointer flex items-center justify-between ${isSelected
-                          ? 'border-primary bg-primary/5 shadow-md shadow-primary/5'
-                          : 'border-slate-100 bg-white hover:border-slate-200'
+                      onClick={() => !isAlreadyAdded && toggleSelection(selectionValue, name || selectionValue)}
+                      className={`p-5 rounded-[20px] border-2 transition-all flex items-center justify-between ${
+                        isAlreadyAdded
+                          ? 'border-emerald-100 bg-emerald-50/40 opacity-70 cursor-default'
+                          : isSelected
+                            ? 'border-primary bg-primary/5 shadow-md shadow-primary/5 cursor-pointer'
+                            : 'border-slate-100 bg-white hover:border-slate-200 cursor-pointer'
                         }`}
                     >
                       <div className="flex items-center gap-4">
@@ -286,12 +299,19 @@ export default function AddSellerModal() {
                           </p>
                         </div>
                       </div>
-                      <div className={`w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all shrink-0 ${isSelected
-                        ? 'bg-primary border-primary text-white'
-                        : 'border-slate-200 text-transparent'
-                        }`}>
-                        <Check size={14} strokeWidth={3} />
-                      </div>
+                      {isAlreadyAdded ? (
+                        <div className="flex items-center gap-1.5 text-emerald-500 bg-emerald-100/50 px-3 py-1 rounded-full shrink-0">
+                          <Check size={14} strokeWidth={3} />
+                          <span className="text-[10px] font-bold uppercase tracking-wider">Added</span>
+                        </div>
+                      ) : (
+                        <div className={`w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all shrink-0 ${isSelected
+                          ? 'bg-primary border-primary text-white'
+                          : 'border-slate-200 text-transparent'
+                          }`}>
+                          <Check size={14} strokeWidth={3} />
+                        </div>
+                      )}
                     </div>
                   );
                 })}
