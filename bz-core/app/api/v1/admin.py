@@ -188,7 +188,7 @@ async def update_chat(
 
 @router.get("/chats", response_model=list[MonitoredChatResponse])
 async def list_chats(db: AsyncSession = Depends(get_db), _=Depends(require_admin)):
-    result = await db.execute(select(MonitoredChat).order_by(MonitoredChat.added_at.desc()))
+    result = await db.execute(select(MonitoredChat).order_by(MonitoredChat.added_at.desc(), MonitoredChat.id.desc()))
     chats = result.scalars().all()
     # Attach product counts
     counts_result = await db.execute(
@@ -223,7 +223,7 @@ async def search_sellers(
             )
         )
 
-    query = query.order_by(MonitoredChat.added_at.desc())
+    query = query.order_by(MonitoredChat.added_at.desc(), MonitoredChat.id.desc())
 
     # Attach total count
     total_result = await db.execute(select(func.count()).select_from(query.subquery()))
