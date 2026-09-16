@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import time
 import uuid
 
@@ -23,6 +24,14 @@ settings = get_settings()
 
 STRONG_MATCH_THRESHOLD = 0.90
 BORDERLINE_MATCH_THRESHOLD = 0.85
+
+
+def _build_tsquery(query: str) -> str:
+    clean_query = re.sub(r'[^\w\s]', ' ', query)
+    words = [w.strip() for w in clean_query.split() if w.strip()]
+    if not words:
+        return ""
+    return " | ".join(words)
 
 
 async def search_by_image(vector: list[float], page: int, size: int, db: AsyncSession, sort_by: str | None = None, sort_order: str = "desc") -> SearchResponse:
@@ -56,37 +65,49 @@ async def search_by_image(vector: list[float], page: int, size: int, db: AsyncSe
 
 async def search_by_text(query: str, page: int, size: int, db: AsyncSession, sort_by: str | None = None, sort_order: str = "desc") -> SearchResponse:
     t0 = time.perf_counter()
-    pattern = f"%{query}%"
+    tsquery_str = _build_tsquery(query)
+    
+    if not tsquery_str:
+        return SearchResponse(results=[], total=0, query_time_ms=round((time.perf_counter() - t0) * 1000, 2), page=page, size=size)
 
     from sqlalchemy import func
+    
+    ts_vector = func.to_tsvector('english', func.concat_ws(' ', Product.name, func.coalesce(Product.raw_caption, '')))
+    ts_query = func.to_tsquery('english', tsquery_str)
+
+    base_conditions = [
+        Product.status == "active",
+        ts_vector.bool_op('@@')(ts_query)
+    ]
 
     total_result = await db.execute(
-        select(func.count(Product.id)).where(
-            Product.status == "active",
-            or_(Product.name.ilike(pattern), Product.raw_caption.ilike(pattern)),
-        )
+        select(func.count(Product.id)).where(*base_conditions)
     )
     total = total_result.scalar_one()
 
     offset = (page - 1) * size
+    
+    rank = func.ts_rank_cd(ts_vector, ts_query).label('rank')
 
     query_obj = (
-        select(Product)
+        select(Product, rank)
         .options(selectinload(Product.wholesaler))
-        .where(
-            Product.status == "active",
-            or_(Product.name.ilike(pattern), Product.raw_caption.ilike(pattern)),
-        )
+        .where(*base_conditions)
     )
     if sort_by == "price":
         query_obj = query_obj.order_by(Product.price.asc() if sort_order == "asc" else Product.price.desc())
     elif sort_by == "receivedAt":
         query_obj = query_obj.order_by(Product.received_at.asc() if sort_order == "asc" else Product.received_at.desc())
+    else:
+        query_obj = query_obj.order_by(rank.desc())
         
     result = await db.execute(query_obj.offset(offset).limit(size))
-    products = list(result.scalars().all())
+    rows = list(result.all())
+    products = [row[0] for row in rows]
+    scores = {row[0].id: row[1] for row in rows}
+    
     chats = await _load_chats(products, db)
-    items = [_product_to_result(p, 1.0, chats) for p in products]
+    items = [_product_to_result(p, scores[p.id], chats) for p in products]
     elapsed_ms = (time.perf_counter() - t0) * 1000
     return SearchResponse(
         results=items, 
@@ -143,17 +164,24 @@ async def search_combined(
             scores[str(r.id)] = scores.get(str(r.id), 0) + r.score * text_weight
 
     if text_query:
-        pattern = f"%{text_query}%"
-        kw_result = await db.execute(
-            select(Product.id)
-            .where(
-                Product.status == "active",
-                or_(Product.name.ilike(pattern), Product.raw_caption.ilike(pattern)),
+        tsquery_str = _build_tsquery(text_query)
+        if tsquery_str:
+            from sqlalchemy import func
+            ts_vector = func.to_tsvector('english', func.concat_ws(' ', Product.name, func.coalesce(Product.raw_caption, '')))
+            ts_query = func.to_tsquery('english', tsquery_str)
+            rank = func.ts_rank_cd(ts_vector, ts_query).label('rank')
+            
+            kw_result = await db.execute(
+                select(Product.id)
+                .where(
+                    Product.status == "active",
+                    ts_vector.bool_op('@@')(ts_query)
+                )
+                .order_by(rank.desc())
+                .limit(fetch_k)
             )
-            .limit(fetch_k)
-        )
-        for (pid,) in kw_result.all():
-            keyword_scores[str(pid)] = text_weight
+            for (pid,) in kw_result.all():
+                keyword_scores[str(pid)] = text_weight
 
     sorted_qdrant_ids = sorted(scores, key=lambda k: scores[k], reverse=True)[:fetch_k]
 
@@ -321,11 +349,16 @@ async def search_from_inhouse_product(
     merged = dict(strong)
     if borderline and inhouse_product.keywords:
         conditions = []
+        from sqlalchemy import func
         for kw in inhouse_product.keywords:
-            pattern = f"%{kw}%"
-            conditions.append(Product.name.ilike(pattern))
-            conditions.append(Product.raw_caption.ilike(pattern))
-        kw_result = await db.execute(
+            tsquery_str = _build_tsquery(kw)
+            if tsquery_str:
+                ts_vector = func.to_tsvector('english', func.concat_ws(' ', Product.name, func.coalesce(Product.raw_caption, '')))
+                ts_query = func.to_tsquery('english', tsquery_str)
+                conditions.append(ts_vector.bool_op('@@')(ts_query))
+        
+        if conditions:
+            kw_result = await db.execute(
             select(Product.id).where(
                 Product.id.in_([uuid.UUID(pid) for pid in borderline]),
                 Product.status == "active",
