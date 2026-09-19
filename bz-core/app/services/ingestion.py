@@ -169,6 +169,9 @@ async def auth_send_code(payload: dict):
 @internal_app.post("/auth/verify-code")
 async def auth_verify_code(payload: dict):
     login_id = (payload or {}).get("login_id")
+    if login_id is None:
+        return JSONResponse({"error": "login_not_found"}, status_code=404)
+    
     code = (payload or {}).get("code", "")
     state = _login_states.get(login_id)
     
@@ -193,6 +196,9 @@ async def auth_verify_code(payload: dict):
 @internal_app.post("/auth/verify-password")
 async def auth_verify_password(payload: dict):
     login_id = (payload or {}).get("login_id")
+    if not isinstance(login_id, str):
+        return JSONResponse({"error": "login_not_found"}, status_code=404)
+        
     password = (payload or {}).get("password", "")
     state = _login_states.get(login_id)
     
@@ -274,8 +280,8 @@ async def _download_and_enqueue(
     client: Client,
     chat_id: int,
     msg_id: int,
+    file_id: str | None,
     caption: str,
-    is_photo: bool,
     sender_id: int | None,
     sender_username: str | None = None,
     sender_name: str | None = None,
@@ -286,25 +292,15 @@ async def _download_and_enqueue(
     from datetime import datetime
     
     image_b64: str | None = None
-    if is_photo:
+    if file_id:
         async with _download_sem:
-            try:
-                msg = await client.get_messages(chat_id, msg_id)
-                buf = io.BytesIO()
-                async for chunk in client.stream_media(msg.photo.file_id):
-                    buf.write(chunk)
-                image_b64 = base64.b64encode(buf.getvalue()).decode()
-            except Exception as exc:
-                log.error(
-                    "image_download_failed",
-                    chat_id=chat_id,
-                    msg_id=msg_id,
-                    error=str(exc),
-                )
-                return
+            buf = io.BytesIO()
+            async for chunk in client.stream_media(file_id):  # type: ignore
+                buf.write(chunk)
+            image_b64 = base64.b64encode(buf.getvalue()).decode()
     payload = {
         "image_b64": image_b64,
-        "has_image": is_photo,
+        "has_image": bool(file_id),
         "caption": caption,
         "sender_id": sender_id,
         "sender_username": sender_username,
@@ -314,11 +310,8 @@ async def _download_and_enqueue(
         "message_id": msg_id,
         "date": datetime.fromtimestamp(date, tz=UTC).isoformat() if date else None,
     }
-    try:
-        await enqueue_message(payload, bypass_limits=bypass_limits)
-        log.info("message_enqueued", chat_id=chat_id, msg_id=msg_id, has_image=is_photo)
-    except Exception as exc:
-        log.error("enqueue_failed", chat_id=chat_id, msg_id=msg_id, error=str(exc))
+    await enqueue_message(payload, bypass_limits=bypass_limits)
+    log.info("message_enqueued", chat_id=chat_id, msg_id=msg_id, has_image=bool(file_id))
 
 # ── Startup catch-up ──────────────────────────────────────────────────────────
 async def _get_last_logged_msg_id(chat_id: int) -> int | None:
@@ -382,35 +375,14 @@ async def _enqueue_from_history(client: Client, message, chat_title: str) -> boo
         client=client,
         chat_id=message.chat.id,
         msg_id=message.id,
+        file_id=message.photo.file_id if is_photo else None,
         caption=caption,
-        is_photo=is_photo,
         sender_id=sender_id,
         chat_title=chat_title,
         date=date,
         bypass_limits=True,
     )
     return True
-
-async def _load_existing_products(chat_id: int) -> set[tuple[str, float | None]]:
-    """Load (raw_caption, price) pairs for active products in one query.
-    Returns a set of tuples for fast O(1) dedup lookup.
-    """
-    from sqlalchemy import select
-    from app.core.database import AsyncSessionLocal
-    from app.models.product import Product
-    
-    async with AsyncSessionLocal() as session:
-        result = await session.execute(
-            select(Product.raw_caption, Product.price).where(
-                Product.chat_id == str(chat_id),
-                Product.status == "active",
-                Product.raw_caption.isnot(None),
-            )
-        )
-        return {
-            (row[0], float(row[1]) if row[1] is not None else None)
-            for row in result.all()
-        }
 
 async def _resolve_peer(client: Client, chat_id: int) -> bool:
     """Ensure Pyrogram's internal peer cache has the access_hash for this chat.
@@ -443,19 +415,21 @@ async def _catch_up_chat(client: Client, chat_id: int, chat_title: str) -> int:
     limit = FIRST_RUN_MSG_LIMIT if is_first_run else 0  # 0 = no hard limit
     count = 0
     
-    async for message in client.get_chat_history(chat_id):
-        if last_msg_id is not None and message.id <= last_msg_id:
-            break
-        missed.append(message)
-        count += 1
-        if is_first_run and count >= limit:
-            break
+    history = client.get_chat_history(chat_id)
+    if history is not None:
+        async for message in history:
+            if last_msg_id is not None and message.id <= last_msg_id:
+                break
+            missed.append(message)
+            count += 1
+            if is_first_run and count >= limit:
+                break
     missed.reverse()
     
-    # Batch dedup: 1 DB query to load existing (caption, price) pairs
-    existing_products = await _load_existing_products(chat_id)
     from app.services.processing import _extract_price
     enqueued = 0
+    seen_in_batch = set()
+    max_seen_id = last_msg_id
     
     for message in missed:
         try:
@@ -463,17 +437,19 @@ async def _catch_up_chat(client: Client, chat_id: int, chat_title: str) -> int:
             price = None
             if caption:
                 price = _extract_price(caption)
-                if (caption, price) in existing_products:
+                if (caption, price) in seen_in_batch:
                     log.debug(
-                        "poll_skip_existing_product",
+                        "poll_skip_batch_duplicate",
                         chat_id=chat_id,
                         msg_id=message.id,
                     )
+                    max_seen_id = message.id
                     continue
             if await _enqueue_from_history(client, message, chat_title):
                 enqueued += 1
                 if caption:
-                    existing_products.add((caption, price))
+                    seen_in_batch.add((caption, price))
+            max_seen_id = message.id
         except Exception as exc:
             log.error(
                 "catch_up_message_failed",
@@ -481,11 +457,9 @@ async def _catch_up_chat(client: Client, chat_id: int, chat_title: str) -> int:
                 msg_id=message.id,
                 error=str(exc),
             )
+            break
     
-    # Advance the cursor to the highest message_id we saw in this batch.
-    # This ensures filtered/skipped messages are never re-fetched.
-    if missed:
-        max_seen_id = missed[-1].id  # list is sorted ascending after reverse
+    if max_seen_id is not None and (last_msg_id is None or max_seen_id > last_msg_id):
         await _advance_cursor(chat_id, max_seen_id)
     return enqueued
 
@@ -611,8 +585,10 @@ async def main() -> None:
             # This populates access_hash entries for every joined channel/group
             # so that get_chat_history() calls never hit "Peer id invalid".
             dialog_count = 0
-            async for _ in client.get_dialogs():
-                dialog_count += 1
+            dialogs = client.get_dialogs()
+            if dialogs is not None:
+                async for _ in dialogs:
+                    dialog_count += 1
             log.info("peer_cache_hydrated", dialogs=dialog_count)
             
             # Load whitelist into memory
